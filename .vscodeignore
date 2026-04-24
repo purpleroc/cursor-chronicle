@@ -1,0 +1,16 @@
+.vscode/**
+.specstory/**
+.cursor/**
+.github/**
+node_modules/**
+src/**
+pic/**
+*.vsix
+*.ts
+tsconfig.json
+esbuild.config.cjs
+DEV_GUIDE.md
+.DS_Store
+.gitignore
+.git/**
+agent-transcripts/**

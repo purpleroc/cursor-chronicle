@@ -1,0 +1,276 @@
+{
+  "name": "cursor-chronicle-sync",
+  "displayName": "Cursor Chronicle Sync",
+  "description": "Backup Cursor AI conversations & Skills to GitHub. Markdown export, incremental sync, Skills management and Remote-SSH support. 将 Cursor AI 对话与自定义 Skills 自动备份到 GitHub，支持 Markdown 导出、增量同步、Skills 安装管理和 Remote-SSH 环境。",
+  "version": "0.0.5",
+  "publisher": "purpleroc",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/purpleroc/cursor-chronicle"
+  },
+  "homepage": "https://github.com/purpleroc/cursor-chronicle#readme",
+  "bugs": {
+    "url": "https://github.com/purpleroc/cursor-chronicle/issues"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "markdown": "github",
+  "qna": "marketplace",
+  "extensionKind": ["ui", "workspace"],
+  "categories": [
+    "Machine Learning",
+    "SCM Providers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursorChronicle",
+          "title": "Cursor Chronicle",
+          "icon": "resources/sidebar.svg"
+        }
+      ]
+    },
+    "views": {
+      "cursorChronicle": [
+        {
+          "id": "cursorChronicle.welcome",
+          "name": "Setup",
+          "when": "!cursorChronicle.configured"
+        },
+        {
+          "id": "cursorChronicle.conversations",
+          "name": "Conversations",
+          "when": "cursorChronicle.configured"
+        },
+        {
+          "id": "cursorChronicle.skills",
+          "name": "Skills",
+          "when": "cursorChronicle.configured"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "cursorChronicle.welcome",
+        "contents": "Welcome to Cursor Chronicle!\n\nSync your AI conversations and skills to GitHub.\n\n[Configure GitHub](command:cursorChronicle.openSettings)\n\nSet up your GitHub token and repository to get started."
+      }
+    ],
+    "commands": [
+      {
+        "command": "cursorChronicle.syncNow",
+        "title": "Collect + Sync GitHub",
+        "category": "Chronicle",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "cursorChronicle.collectToLocal",
+        "title": "Collect to Local Folder",
+        "category": "Chronicle",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "cursorChronicle.openSettings",
+        "title": "Configure GitHub",
+        "category": "Chronicle",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cursorChronicle.manageSkills",
+        "title": "Install Skills from GitHub",
+        "category": "Chronicle",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "cursorChronicle.exportConversations",
+        "title": "Export All Conversations",
+        "category": "Chronicle",
+        "icon": "$(export)"
+      },
+      {
+        "command": "cursorChronicle.viewSyncStatus",
+        "title": "View Sync Status",
+        "category": "Chronicle"
+      },
+      {
+        "command": "cursorChronicle.refreshConversations",
+        "title": "Refresh",
+        "category": "Chronicle",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cursorChronicle.refreshSkills",
+        "title": "Refresh",
+        "category": "Chronicle",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cursorChronicle.syncOneConversation",
+        "title": "Sync to GitHub",
+        "category": "Chronicle",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "cursorChronicle.exportOneConversation",
+        "title": "Export to Markdown",
+        "category": "Chronicle",
+        "icon": "$(export)"
+      },
+      {
+        "command": "cursorChronicle.syncOneSkill",
+        "title": "Sync to GitHub",
+        "category": "Chronicle",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "cursorChronicle.chooseInstallRemoteSkill",
+        "title": "Install Skill from GitHub",
+        "category": "Chronicle"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cursorChronicle.syncNow",
+          "when": "view == cursorChronicle.conversations || view == cursorChronicle.skills",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cursorChronicle.collectToLocal",
+          "when": "view == cursorChronicle.conversations",
+          "group": "navigation@2"
+        },
+        {
+          "command": "cursorChronicle.refreshConversations",
+          "when": "view == cursorChronicle.conversations",
+          "group": "navigation@3"
+        },
+        {
+          "command": "cursorChronicle.openSettings",
+          "when": "view == cursorChronicle.conversations || view == cursorChronicle.skills",
+          "group": "navigation@4"
+        },
+        {
+          "command": "cursorChronicle.refreshSkills",
+          "when": "view == cursorChronicle.skills",
+          "group": "navigation@3"
+        },
+        {
+          "command": "cursorChronicle.manageSkills",
+          "when": "view == cursorChronicle.skills",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cursorChronicle.syncOneConversation",
+          "when": "viewItem == conversation",
+          "group": "inline@1"
+        },
+        {
+          "command": "cursorChronicle.exportOneConversation",
+          "when": "viewItem == conversation"
+        },
+        {
+          "command": "cursorChronicle.syncOneSkill",
+          "when": "viewItem == skill",
+          "group": "inline@1"
+        },
+        {
+          "command": "cursorChronicle.chooseInstallRemoteSkill",
+          "when": "viewItem == remoteSkill"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Cursor Chronicle",
+      "properties": {
+        "cursorChronicle.github.repository": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub repository (owner/repo)."
+        },
+        "cursorChronicle.github.createRepoIfMissing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-create repository if not found."
+        },
+        "cursorChronicle.github.defaultVisibility": {
+          "type": "string",
+          "enum": ["private", "public"],
+          "default": "private",
+          "description": "Visibility for auto-created repo."
+        },
+        "cursorChronicle.autoSync.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable periodic auto sync."
+        },
+        "cursorChronicle.autoSync.intervalMinutes": {
+          "type": "number",
+          "default": 10,
+          "enum": [5, 10, 30, 60],
+          "description": "Auto sync interval in minutes."
+        },
+        "cursorChronicle.sync.conversations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include conversations in sync."
+        },
+        "cursorChronicle.sync.skills": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include skills in sync."
+        },
+        "cursorChronicle.export.localPath": {
+          "type": "string",
+          "default": ".cursor-chronicle/exports",
+          "description": "Workspace-relative local export path."
+        },
+        "cursorChronicle.ignore.projects": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Project names to skip when scanning."
+        },
+        "cursorChronicle.localProjectPath": {
+          "type": "string",
+          "default": "~/.cursor-chronicle",
+          "description": "Local Chronicle folder (conversations + skills mirror + git). Tilde ~ is expanded."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.cjs",
+    "build:prod": "node esbuild.config.cjs --production",
+    "watch": "node esbuild.config.cjs --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "release": "npm run typecheck && npm run clean && npm run build:prod && npx @vscode/vsce@2.32.0 package"
+  },
+  "keywords": ["cursor", "ai", "chat", "skills management", "skills backup", "github", "sync", "export", "markdown", "skills", "cursor chronicle", "chronicle", "cursor-chronicle", "cursor-chronicle-sync"],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/vscode": "~1.95.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.1"
+  }
+}
