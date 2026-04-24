@@ -129,14 +129,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await refreshConfiguredContext(context);
   applySyncSubdir(localStore);
 
-  const settingsPanel = new SettingsPanel(context, async (payload, token) => {
-    await saveSettings(payload, token, context);
-    await refreshConfiguredContext(context);
-    applySyncSubdir(localStore);
-    restartAutoSync(runCollectAndSync);
-    convTree.refresh();
-    skillsTree.refresh();
-  });
+  const settingsPanel = new SettingsPanel(
+    context,
+    async (payload, token) => {
+      await saveSettings(payload, token, context);
+      await refreshConfiguredContext(context);
+      applySyncSubdir(localStore);
+      if (payload.branch) {
+        try {
+          await localStore.gitSwitchBranch(payload.branch);
+        } catch (e) {
+          logWarn(`Settings save: branch switch to ${payload.branch} failed: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+      restartAutoSync(runCollectAndSync);
+      convTree.refresh();
+      skillsTree.refresh();
+    }
+  );
 
   const runCollectAndSync = async (): Promise<void> => {
     logInfo("runCollectAndSync: acquiring lock...");
@@ -201,7 +211,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("cursorChronicle.openSettings", async () => {
       logDebug("openSettings: opening settings panel");
-      settingsPanel.show(readSettings(), await getTokenMask(context));
+      const lang = vscode.workspace.getConfiguration("cursorChronicle").get<"zh-CN" | "en">("language", "zh-CN");
+      settingsPanel.show(readSettings(), await getTokenMask(context), lang);
     }),
     vscode.commands.registerCommand("cursorChronicle.viewSyncStatus", async () => {
       const state = await syncState.load();
@@ -335,6 +346,73 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
 
+    vscode.commands.registerCommand("cursorChronicle.importSkill", async () => {
+      const uris = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { Markdown: ["md"] },
+        title: "Import Skill from Markdown",
+      });
+      if (!uris || uris.length === 0) return;
+
+      const uri = uris[0];
+      const defaultName = path.basename(uri.fsPath, ".md").toLowerCase().replace(/\s+/g, "-");
+      const skillName = await vscode.window.showInputBox({
+        prompt: "Skill name (will create directory under ~/.cursor/skills/)",
+        value: defaultName,
+        placeHolder: defaultName,
+      });
+      if (!skillName) return;
+
+      try {
+        const remoteHome = await detectRemoteHome();
+        const cursorHome = remoteHome?.fsPath ?? (process.env.HOME ?? process.env.USERPROFILE ?? "");
+        const skillDir = path.join(cursorHome, ".cursor", "skills", skillName);
+        await fs.mkdir(skillDir, { recursive: true });
+
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const content = new TextDecoder().decode(bytes);
+        await fs.writeFile(path.join(skillDir, "SKILL.md"), content, "utf8");
+
+        skillsTree.refresh();
+        void vscode.window.showInformationMessage(`已导入 Skill: ${skillName} → ~/.cursor/skills/${skillName}/`);
+      } catch (e) {
+        logError(`importSkill: failed`, e);
+        void vscode.window.showErrorMessage(`导入 Skill 失败: ${e instanceof Error ? e.message : e}`);
+      }
+    }),
+
+    vscode.commands.registerCommand("cursorChronicle.importConversation", async () => {
+      const uris = await vscode.window.showOpenDialog({
+        canSelectMany: true,
+        filters: { Markdown: ["md"] },
+        title: "Import Conversations from Markdown",
+      });
+      if (!uris || uris.length === 0) return;
+
+      const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name ?? "imported";
+      const projectName = await vscode.window.showInputBox({
+        prompt: "Project name for imported conversations",
+        value: workspaceName,
+        placeHolder: workspaceName,
+      });
+      if (!projectName) return;
+
+      let imported = 0;
+      for (const uri of uris) {
+        try {
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          const content = new TextDecoder().decode(bytes);
+          const fileName = path.basename(uri.fsPath);
+          await localStore.importConversationFile(projectName, fileName, content);
+          imported++;
+        } catch (e) {
+          logError(`importConversation: failed to import ${uri.fsPath}`, e);
+        }
+      }
+      convTree.refresh();
+      void vscode.window.showInformationMessage(`已导入 ${imported} 个对话到 "${projectName}"`);
+    }),
+
     vscode.commands.registerCommand("cursorChronicle.exportConversations", async () => {
       const folder = vscode.workspace.workspaceFolders?.[0];
       if (!folder) {
@@ -366,7 +444,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       "立即配置"
     );
     if (action === "立即配置") {
-      settingsPanel.show(readSettings(), await getTokenMask(context));
+      const lang = vscode.workspace.getConfiguration("cursorChronicle").get<"zh-CN" | "en">("language", "zh-CN");
+      settingsPanel.show(readSettings(), await getTokenMask(context), lang);
     }
   }
 
@@ -421,6 +500,7 @@ function readSettings(): SettingsPayload {
   return {
     localProjectPath: c.get<string>("localProjectPath", "~/.cursor-chronicle"),
     repository: c.get<string>("github.repository", ""),
+    branch: c.get<string>("github.branch", "master"),
     createRepoIfMissing: c.get<boolean>("github.createRepoIfMissing", false),
     visibility: c.get<"private" | "public">("github.defaultVisibility", "private"),
     autoSync: c.get<boolean>("autoSync.enabled", false),
@@ -439,6 +519,7 @@ async function saveSettings(
   const g = vscode.ConfigurationTarget.Global;
   await c.update("localProjectPath", payload.localProjectPath, g);
   await c.update("github.repository", payload.repository, g);
+  await c.update("github.branch", payload.branch || "master", g);
   await c.update("github.createRepoIfMissing", payload.createRepoIfMissing, g);
   await c.update("github.defaultVisibility", payload.visibility, g);
   await c.update("autoSync.enabled", payload.autoSync, g);
@@ -504,13 +585,13 @@ async function executeGitHubSync(
     await prepareSkillsForPublish(localStore, skillsCollector, github);
   }
 
-  await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo);
+  await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo, settings.branch);
   const { committed, filesChanged } = await localStore.gitAddAndCommit("chore: sync conversations and skills");
 
   if (committed) {
     logInfo(`executeGitHubSync: committed ${filesChanged} files`);
   }
-  await localStore.gitPush();
+  await localStore.gitPush(settings.branch);
 
   await markAllAsSynced(localStore, skillsCollector, syncState, github);
   convTree.refresh();
@@ -584,18 +665,18 @@ async function gitCommitAndPush(
   message: string
 ): Promise<{ committed: boolean; filesChanged: number }> {
   const token = await context.secrets.get(TOKEN_KEY);
-  const repository = vscode.workspace
-    .getConfiguration("cursorChronicle")
-    .get<string>("github.repository", "");
+  const c = vscode.workspace.getConfiguration("cursorChronicle");
+  const repository = c.get<string>("github.repository", "");
+  const branch = c.get<string>("github.branch", "master");
   if (!token || !repository) {
     throw new Error("请先配置 GitHub。");
   }
   const github = new GitHubSyncService(token);
   const repoRef = github.parseRepo(repository);
   await github.assertRepositoryWritable(repoRef);
-  await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo);
+  await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo, branch);
   const result = await localStore.gitAddAndCommit(message);
-  await localStore.gitPush();
+  await localStore.gitPush(branch);
   return result;
 }
 

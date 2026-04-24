@@ -2,7 +2,7 @@
   "name": "cursor-chronicle-sync",
   "displayName": "Cursor Chronicle Sync",
   "description": "Backup Cursor AI conversations & Skills to GitHub. Markdown export, incremental sync, Skills management and Remote-SSH support. 将 Cursor AI 对话与自定义 Skills 自动备份到 GitHub，支持 Markdown 导出、增量同步、Skills 安装管理和 Remote-SSH 环境。",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "purpleroc",
   "repository": {
     "type": "git",
@@ -137,6 +137,18 @@
         "command": "cursorChronicle.chooseInstallRemoteSkill",
         "title": "Install Skill from GitHub",
         "category": "Chronicle"
+      },
+      {
+        "command": "cursorChronicle.importConversation",
+        "title": "Import Conversation from MD",
+        "category": "Chronicle",
+        "icon": "$(add)"
+      },
+      {
+        "command": "cursorChronicle.importSkill",
+        "title": "Import Skill from MD",
+        "category": "Chronicle",
+        "icon": "$(add)"
       }
     ],
     "menus": {
@@ -152,24 +164,34 @@
           "group": "navigation@2"
         },
         {
-          "command": "cursorChronicle.refreshConversations",
+          "command": "cursorChronicle.importConversation",
           "when": "view == cursorChronicle.conversations",
           "group": "navigation@3"
         },
         {
-          "command": "cursorChronicle.openSettings",
-          "when": "view == cursorChronicle.conversations || view == cursorChronicle.skills",
+          "command": "cursorChronicle.refreshConversations",
+          "when": "view == cursorChronicle.conversations",
           "group": "navigation@4"
         },
         {
-          "command": "cursorChronicle.refreshSkills",
+          "command": "cursorChronicle.openSettings",
+          "when": "view == cursorChronicle.conversations || view == cursorChronicle.skills",
+          "group": "navigation@5"
+        },
+        {
+          "command": "cursorChronicle.importSkill",
           "when": "view == cursorChronicle.skills",
           "group": "navigation@3"
         },
         {
+          "command": "cursorChronicle.refreshSkills",
+          "when": "view == cursorChronicle.skills",
+          "group": "navigation@4"
+        },
+        {
           "command": "cursorChronicle.manageSkills",
           "when": "view == cursorChronicle.skills",
-          "group": "navigation@5"
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
@@ -212,6 +234,11 @@
           "default": "private",
           "description": "Visibility for auto-created repo."
         },
+        "cursorChronicle.github.branch": {
+          "type": "string",
+          "default": "master",
+          "description": "Target branch for sync."
+        },
         "cursorChronicle.autoSync.enabled": {
           "type": "boolean",
           "default": false,
@@ -248,6 +275,12 @@
           "type": "string",
           "default": "~/.cursor-chronicle",
           "description": "Local Chronicle folder (conversations + skills mirror + git). Tilde ~ is expanded."
+        },
+        "cursorChronicle.language": {
+          "type": "string",
+          "enum": ["zh-CN", "en"],
+          "default": "zh-CN",
+          "description": "UI language for settings page."
         }
       }
     }

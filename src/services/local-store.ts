@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import { expandUserPath } from "../utils/local-path";
 import { buildConversationFilename, sanitizeFilenamePart } from "../utils/file-naming";
 import { logInfo, logDebug, logWarn } from "../utils/logger";
@@ -15,9 +16,14 @@ const FRONTMATTER_KEYS = {
   workspaceUri: "chronicleWorkspaceUri",
   workspacePath: "chronicleWorkspacePath",
   source: "chronicleSource",
+  hostname: "chronicleHostname",
 } as const;
 
 export type ConversationSource = "local" | "remote";
+
+function getHostname(): string {
+  return require("node:os").hostname() || "unknown";
+}
 
 export interface ChronicleFrontmatter {
   composerId: string;
@@ -25,6 +31,7 @@ export interface ChronicleFrontmatter {
   workspaceUri?: string;
   workspacePath?: string;
   source?: ConversationSource;
+  hostname?: string;
 }
 
 export interface LocalConversationEntry {
@@ -146,6 +153,7 @@ export class LocalStore {
         ? `${FRONTMATTER_KEYS.workspacePath}: ${JSON.stringify(meta.workspacePath)}`
         : "",
       source ? `${FRONTMATTER_KEYS.source}: ${source}` : "",
+      `${FRONTMATTER_KEYS.hostname}: ${getHostname()}`,
       "---",
       "",
     ]
@@ -242,6 +250,52 @@ export class LocalStore {
     return out;
   }
 
+  async importConversationFile(projectName: string, fileName: string, content: string): Promise<string> {
+    await this.init();
+    const safeProject = sanitizeFilenamePart(projectName);
+    const dir = path.join(this.conversationsDir(), safeProject);
+    await fs.mkdir(dir, { recursive: true });
+
+    const existingFm = parseFrontmatter(content);
+
+    let finalContent: string;
+    let composerId: string;
+    let lastUpdatedAt: number;
+
+    if (existingFm) {
+      finalContent = content;
+      composerId = existingFm.composerId;
+      lastUpdatedAt = existingFm.lastUpdatedAt;
+    } else {
+      composerId = randomUUID();
+      lastUpdatedAt = Date.now();
+      const fm = [
+        "---",
+        `${FRONTMATTER_KEYS.composerId}: ${composerId}`,
+        `${FRONTMATTER_KEYS.lastUpdatedAt}: ${lastUpdatedAt}`,
+        `${FRONTMATTER_KEYS.source}: local`,
+        `${FRONTMATTER_KEYS.hostname}: ${getHostname()}`,
+        "---",
+        "",
+      ].join("\n");
+      finalContent = fm + content;
+    }
+
+    const safeName = fileName.endsWith(".md") ? fileName : fileName + ".md";
+    const filePath = path.join(dir, safeName);
+    await fs.writeFile(filePath, finalContent, "utf8");
+
+    const idx = await this.loadIndex();
+    const rel = path.relative(this.getSyncDir(), filePath);
+    idx.conversations[composerId] = {
+      relativePath: rel.split(path.sep).join("/"),
+      lastUpdatedAt,
+    };
+    await this.saveIndex(idx);
+    logInfo(`LocalStore.importConversationFile: imported ${safeName} to ${safeProject}`);
+    return filePath;
+  }
+
   async writePublishSkill(skillDirName: string, relativeFile: string, content: string): Promise<void> {
     const outPath = path.join(this.getSyncDir(), "skills", skillDirName, relativeFile);
     await fs.mkdir(path.dirname(outPath), { recursive: true });
@@ -254,14 +308,34 @@ export class LocalStore {
     await fs.writeFile(outPath, jsonContent, "utf8");
   }
 
-  async gitConfigureRemote(token: string, owner: string, repo: string): Promise<void> {
+  async gitConfigureRemote(token: string, owner: string, repo: string, branch: string = "master"): Promise<void> {
     const cwd = this.getSyncDir();
     await fs.mkdir(cwd, { recursive: true });
+    const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
 
-    try {
-      await fs.access(path.join(cwd, ".git"));
-    } catch {
-      await execFileAsync("git", ["init"], { cwd, timeout: 10_000 });
+    const hasGit = await fs.access(path.join(cwd, ".git")).then(() => true, () => false);
+
+    if (!hasGit) {
+      const cloned = await this.tryCloneInto(url, branch, cwd);
+      if (!cloned) {
+        await execFileAsync("git", ["init"], { cwd, timeout: 10_000 });
+        try {
+          await execFileAsync("git", ["branch", "-M", branch], { cwd, timeout: 5_000 });
+        } catch {
+          logDebug("LocalStore.gitConfigureRemote: branch rename skipped (no commits yet)");
+        }
+        try {
+          await execFileAsync("git", ["remote", "add", "origin", url], { cwd, timeout: 10_000 });
+        } catch {
+          await execFileAsync("git", ["remote", "set-url", "origin", url], { cwd, timeout: 10_000 });
+        }
+      }
+    } else {
+      try {
+        await execFileAsync("git", ["remote", "set-url", "origin", url], { cwd, timeout: 10_000 });
+      } catch {
+        await execFileAsync("git", ["remote", "add", "origin", url], { cwd, timeout: 10_000 });
+      }
     }
 
     try {
@@ -271,13 +345,79 @@ export class LocalStore {
       await execFileAsync("git", ["config", "user.name", "Cursor Chronicle"], { cwd, timeout: 5_000 });
     }
 
-    const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
+    logDebug(`LocalStore.gitConfigureRemote: configured for ${owner}/${repo} branch=${branch}`);
+  }
+
+  private async tryCloneInto(url: string, branch: string, targetDir: string): Promise<boolean> {
+    const tmpDir = targetDir + "__clone_tmp_" + Date.now();
     try {
-      await execFileAsync("git", ["remote", "set-url", "origin", url], { cwd, timeout: 10_000 });
-    } catch {
-      await execFileAsync("git", ["remote", "add", "origin", url], { cwd, timeout: 10_000 });
+      await execFileAsync("git", ["clone", "--branch", branch, "--single-branch", url, tmpDir], { timeout: 120_000 });
+
+      await this.mergeTreeNoOverwrite(tmpDir, targetDir);
+
+      const srcGit = path.join(tmpDir, ".git");
+      const dstGit = path.join(targetDir, ".git");
+      await fs.rename(srcGit, dstGit);
+      await fs.rm(tmpDir, { recursive: true, force: true });
+
+      logInfo(`LocalStore.tryCloneInto: cloned and merged with local files, branch=${branch}`);
+      return true;
+    } catch (e) {
+      logDebug(`LocalStore.tryCloneInto: clone failed (empty/new repo or branch not found), will init instead: ${e instanceof Error ? e.message : e}`);
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      return false;
     }
-    logDebug(`LocalStore.gitConfigureRemote: configured for ${owner}/${repo}`);
+  }
+
+  /**
+   * Copy files from src to dst recursively, skipping .git and never overwriting
+   * existing files in dst. Remote-only files are added; local files are preserved.
+   */
+  private async mergeTreeNoOverwrite(src: string, dst: string): Promise<void> {
+    const SKIP = new Set([".git", "chronicle-index.json"]);
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      if (SKIP.has(entry.name)) continue;
+      const srcPath = path.join(src, entry.name);
+      const dstPath = path.join(dst, entry.name);
+      if (entry.isDirectory()) {
+        await fs.mkdir(dstPath, { recursive: true });
+        await this.mergeTreeNoOverwrite(srcPath, dstPath);
+      } else {
+        const exists = await fs.access(dstPath).then(() => true, () => false);
+        if (!exists) {
+          await fs.copyFile(srcPath, dstPath);
+        }
+      }
+    }
+  }
+
+  async gitSwitchBranch(branch: string): Promise<void> {
+    const cwd = this.getSyncDir();
+    const hasGit = await fs.access(path.join(cwd, ".git")).then(() => true, () => false);
+    if (!hasGit) return;
+
+    const current = await this.gitCurrentBranch().catch(() => "");
+    if (current === branch) return;
+
+    try {
+      await execFileAsync("git", ["fetch", "origin"], { cwd, timeout: 30_000 });
+    } catch {
+      logDebug("LocalStore.gitSwitchBranch: fetch failed (may be offline or empty repo)");
+    }
+
+    try {
+      await execFileAsync("git", ["checkout", branch], { cwd, timeout: 10_000 });
+      logInfo(`LocalStore.gitSwitchBranch: switched to existing branch ${branch}`);
+    } catch {
+      try {
+        await execFileAsync("git", ["checkout", "-b", branch, `origin/${branch}`], { cwd, timeout: 10_000 });
+        logInfo(`LocalStore.gitSwitchBranch: created tracking branch ${branch}`);
+      } catch {
+        await execFileAsync("git", ["checkout", "-b", branch], { cwd, timeout: 10_000 });
+        logInfo(`LocalStore.gitSwitchBranch: created new local branch ${branch}`);
+      }
+    }
   }
 
   async gitAddAndCommit(message: string): Promise<{ committed: boolean; filesChanged: number }> {
@@ -301,7 +441,7 @@ export class LocalStore {
     return { committed: true, filesChanged };
   }
 
-  async gitPush(): Promise<void> {
+  async gitPush(branch?: string): Promise<void> {
     const cwd = this.getSyncDir();
     try {
       await execFileAsync("git", ["rev-parse", "HEAD"], { cwd, timeout: 5_000 });
@@ -309,25 +449,25 @@ export class LocalStore {
       logDebug("LocalStore.gitPush: no commits yet, skipping push");
       return;
     }
-    const branch = await this.gitCurrentBranch();
+    const targetBranch = branch || await this.gitCurrentBranch();
     try {
-      await execFileAsync("git", ["push", "-u", "origin", branch], { cwd, timeout: 120_000 });
+      await execFileAsync("git", ["push", "-u", "origin", targetBranch], { cwd, timeout: 120_000 });
       logInfo("LocalStore.gitPush: pushed successfully");
       return;
     } catch {
       logWarn("LocalStore.gitPush: push rejected, attempting pull --allow-unrelated-histories");
     }
     try {
-      await execFileAsync("git", ["pull", "--no-edit", "--allow-unrelated-histories", "origin", branch], {
+      await execFileAsync("git", ["pull", "--no-edit", "--allow-unrelated-histories", "origin", targetBranch], {
         cwd, timeout: 60_000,
       });
-      await execFileAsync("git", ["push", "-u", "origin", branch], { cwd, timeout: 120_000 });
+      await execFileAsync("git", ["push", "-u", "origin", targetBranch], { cwd, timeout: 120_000 });
       logInfo("LocalStore.gitPush: pushed after merge");
       return;
     } catch {
       logWarn("LocalStore.gitPush: merge conflict, force pushing (local is source of truth)");
     }
-    await execFileAsync("git", ["push", "--force", "-u", "origin", branch], { cwd, timeout: 120_000 });
+    await execFileAsync("git", ["push", "--force", "-u", "origin", targetBranch], { cwd, timeout: 120_000 });
     logInfo("LocalStore.gitPush: force pushed successfully");
   }
 
@@ -381,5 +521,7 @@ export function parseFrontmatter(raw: string): ChronicleFrontmatter | null {
   const sourceRaw = map[FRONTMATTER_KEYS.source];
   const source = sourceRaw === "local" || sourceRaw === "remote" ? sourceRaw : undefined;
 
-  return { composerId: id, lastUpdatedAt, workspaceUri, workspacePath, source };
+  const hostname = map[FRONTMATTER_KEYS.hostname];
+
+  return { composerId: id, lastUpdatedAt, workspaceUri, workspacePath, source, hostname };
 }

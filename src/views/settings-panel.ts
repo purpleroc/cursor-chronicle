@@ -4,6 +4,7 @@ import { logDebug, logError, logInfo, logWarn } from "../utils/logger";
 export interface SettingsPayload {
   localProjectPath: string;
   repository: string;
+  branch: string;
   createRepoIfMissing: boolean;
   visibility: "private" | "public";
   autoSync: boolean;
@@ -13,6 +14,86 @@ export interface SettingsPayload {
 }
 
 type TokenType = "classic" | "fine-grained" | "unknown";
+type Lang = "zh-CN" | "en";
+
+const i18n: Record<Lang, Record<string, string>> = {
+  "zh-CN": {
+    headerTitle: "Cursor Chronicle",
+    headerDesc: "将对话记录和 Skills 自动备份到 GitHub 仓库",
+    localStorageStep: "本地存储",
+    localPathLabel: "Chronicle 本地目录",
+    localPathHint: '对话记录和 Skills 镜像的本地存储路径。支持 <b>~</b> 展开为用户目录。修改后需重新收集。',
+    githubStep: "GitHub 连接",
+    connected: "已连接",
+    notConnected: "未连接",
+    tokenLabel: "Personal Access Token",
+    testBtn: "验证",
+    tokenHint: '验证时会自动识别 Token 类型。Classic Token: 适合自动创建仓库（需 <b>repo</b>）。Fine-grained Token: 适合最小权限（需 <b>Contents: Read and Write</b>，并授予目标仓库权限）。<br/>创建入口: https://github.com/settings/tokens (Classic) / https://github.com/settings/personal-access-tokens/new (Fine-grained)',
+    repoLabel: "目标仓库 (owner/repo)",
+    branchLabel: "同步分支",
+    branchHint: "验证 Token 后自动加载远程分支列表。保存时自动切换到所选分支。",
+    createRepoLabel: "自动创建仓库",
+    visibilityLabel: "仓库可见性",
+    syncStep: "同步配置",
+    autoSyncLabel: "自动同步",
+    autoSyncDesc: "按设定间隔自动将数据同步到 GitHub",
+    intervalLabel: "同步间隔",
+    scopeLabel: "同步范围",
+    scopeConvLabel: "对话记录",
+    scopeConvDesc: "AI Conversations",
+    scopeSkillLabel: "Skills",
+    scopeSkillDesc: "Custom Agent Skills",
+    saveBtn: "保存设置",
+    savedMsg: "设置已保存！",
+    testing: "验证中...",
+    tokenMissing: "请先输入新 Token",
+    repoFormatError: "目标仓库格式必须是 owner/repo",
+    min5: "5 分钟",
+    min10: "10 分钟",
+    min30: "30 分钟",
+    min60: "60 分钟",
+  },
+  en: {
+    headerTitle: "Cursor Chronicle",
+    headerDesc: "Auto-backup conversations and Skills to GitHub",
+    localStorageStep: "Local Storage",
+    localPathLabel: "Chronicle Local Directory",
+    localPathHint: 'Local storage path for conversations and Skills mirror. Supports <b>~</b> expansion. Re-collect after changing.',
+    githubStep: "GitHub Connection",
+    connected: "Connected",
+    notConnected: "Not Connected",
+    tokenLabel: "Personal Access Token",
+    testBtn: "Verify",
+    tokenHint: 'Token type is auto-detected. Classic Token: suitable for auto-creating repos (needs <b>repo</b> scope). Fine-grained Token: least privilege (needs <b>Contents: Read and Write</b>).<br/>Create: https://github.com/settings/tokens (Classic) / https://github.com/settings/personal-access-tokens/new (Fine-grained)',
+    repoLabel: "Target Repository (owner/repo)",
+    branchLabel: "Sync Branch",
+    branchHint: "Remote branches load after token verification. Saving will auto-switch to the selected branch.",
+    createRepoLabel: "Auto-create repository",
+    visibilityLabel: "Repository Visibility",
+    syncStep: "Sync Settings",
+    autoSyncLabel: "Auto Sync",
+    autoSyncDesc: "Automatically sync data to GitHub at set intervals",
+    intervalLabel: "Sync Interval",
+    scopeLabel: "Sync Scope",
+    scopeConvLabel: "Conversations",
+    scopeConvDesc: "AI Conversations",
+    scopeSkillLabel: "Skills",
+    scopeSkillDesc: "Custom Agent Skills",
+    saveBtn: "Save Settings",
+    savedMsg: "Settings saved!",
+    testing: "Verifying...",
+    tokenMissing: "Please enter a new Token first",
+    repoFormatError: "Repository format must be owner/repo",
+    min5: "5 min",
+    min10: "10 min",
+    min30: "30 min",
+    min60: "60 min",
+  },
+};
+
+function t(lang: Lang, key: string): string {
+  return i18n[lang]?.[key] ?? i18n["en"][key] ?? key;
+}
 
 function escapeHtml(text: string): string {
   return text
@@ -41,13 +122,14 @@ export class SettingsPanel {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly onSave: (payload: SettingsPayload, token?: string) => Promise<void>
+    private readonly onSave: (payload: SettingsPayload, token?: string) => Promise<void>,
+    private readonly onLanguageChange?: (lang: Lang) => void
   ) {}
 
-  show(initial: SettingsPayload, tokenMask: string): void {
+  show(initial: SettingsPayload, tokenMask: string, lang: Lang = "zh-CN"): void {
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.One);
-      this.panel.webview.postMessage({ type: "setData", data: initial, tokenMask });
+      this.panel.webview.postMessage({ type: "setData", data: initial, tokenMask, lang });
       return;
     }
 
@@ -72,6 +154,12 @@ export class SettingsPanel {
           logError(`SettingsPanel.webview: ${String(message.msg ?? "unknown error")}`);
           return;
         }
+        if (message.type === "langChange") {
+          const newLang = message.lang === "en" ? "en" : "zh-CN";
+          await vscode.workspace.getConfiguration("cursorChronicle").update("language", newLang, vscode.ConfigurationTarget.Global);
+          this.onLanguageChange?.(newLang);
+          return;
+        }
         if (message.type === "save") {
           const rawToken = message.token as string | undefined;
           const isPlaceholder = rawToken === "__MASKED__";
@@ -91,7 +179,7 @@ export class SettingsPanel {
 
         if (!rawToken || rawToken === "__MASKED__") {
           logWarn("SettingsPanel.testToken: missing new token");
-          this.panel?.webview.postMessage({ type: "testResult", ok: false, msg: "请先输入新 Token" });
+          this.panel?.webview.postMessage({ type: "testResult", ok: false, msg: t(message.lang ?? "zh-CN", "tokenMissing") });
           return;
         }
 
@@ -110,15 +198,16 @@ export class SettingsPanel {
           ? "Classic Token"
           : tokenType === "fine-grained"
             ? "Fine-grained Token"
-            : "未知类型";
+            : "Unknown";
         let warning: string | undefined;
-        let messageText = `验证成功！用户: ${user.data.login}｜Token 类型: ${tokenTypeLabel}`;
+        let messageText = `✓ ${user.data.login} | ${tokenTypeLabel}`;
+        let branches: string[] = [];
 
         if (repository) {
           const [owner, repo] = repository.split("/");
           if (!owner || !repo) {
             logWarn(`SettingsPanel.testToken: invalid repository format "${repository}"`);
-            this.panel?.webview.postMessage({ type: "testResult", ok: false, msg: "目标仓库格式必须是 owner/repo" });
+            this.panel?.webview.postMessage({ type: "testResult", ok: false, msg: t(message.lang ?? "zh-CN", "repoFormatError") });
             return;
           }
           try {
@@ -132,40 +221,55 @@ export class SettingsPanel {
             const canPush = Boolean(perms?.push || perms?.admin || perms?.maintain);
             if (!canPush) {
               const permText = perms
-                ? [
-                  perms.admin ? "admin" : "",
-                  perms.maintain ? "maintain" : "",
-                  perms.push ? "push" : "",
-                  perms.triage ? "triage" : "",
-                  perms.pull ? "pull" : "",
-                ].filter(Boolean).join(", ")
+                ? [perms.admin ? "admin" : "", perms.maintain ? "maintain" : "", perms.push ? "push" : "", perms.triage ? "triage" : "", perms.pull ? "pull" : ""].filter(Boolean).join(", ")
                 : "unknown";
               logWarn(`SettingsPanel.testToken: no write permission for ${owner}/${repo} perms=${permText}`);
               this.panel?.webview.postMessage({
-                type: "testResult",
-                ok: false,
+                type: "testResult", ok: false,
                 msg: `验证失败: 对目标仓库 ${owner}/${repo} 没有写权限（当前权限: ${permText}）`
               });
               return;
             }
             logInfo(`SettingsPanel.testToken: repo write permission OK for ${owner}/${repo}`);
-            messageText += `｜仓库写入: OK (${owner}/${repo})`;
+            messageText += ` | Repo OK (${owner}/${repo})`;
+
+            try {
+              const branchList = await withTimeout(
+                octokit.repos.listBranches({ owner, repo, per_page: 100 }),
+                15_000,
+                "获取分支列表超时（15s）"
+              );
+              branches = branchList.data.map((b) => b.name);
+              logDebug(`SettingsPanel.testToken: listBranches returned ${branches.length} branches: ${branches.join(", ")}`);
+            } catch (branchErr) {
+              logWarn(`SettingsPanel.testToken: listBranches failed, trying git refs fallback: ${branchErr instanceof Error ? branchErr.message : branchErr}`);
+              try {
+                const refs = await withTimeout(
+                  octokit.git.listMatchingRefs({ owner, repo, ref: "heads/" }),
+                  15_000,
+                  "获取分支引用超时（15s）"
+                );
+                branches = refs.data.map((r) => r.ref.replace("refs/heads/", ""));
+                logDebug(`SettingsPanel.testToken: git refs fallback returned ${branches.length} branches: ${branches.join(", ")}`);
+              } catch (refErr) {
+                logWarn(`SettingsPanel.testToken: git refs fallback also failed: ${refErr instanceof Error ? refErr.message : refErr}`);
+                warning = (warning ? warning + "\n" : "") + "⚠ 无法获取分支列表，请检查 Token 权限。";
+              }
+            }
           } catch (repoErr: unknown) {
             const status = (repoErr as { status?: number }).status;
             if (status === 404) {
               logWarn(`SettingsPanel.testToken: repo not found or inaccessible ${owner}/${repo}`);
               if (!createRepoIfMissing) {
                 this.panel?.webview.postMessage({
-                  type: "testResult",
-                  ok: false,
+                  type: "testResult", ok: false,
                   msg: `验证失败: 目标仓库不存在或当前 Token 无访问权限 (${owner}/${repo})`
                 });
                 return;
               }
               if (owner !== user.data.login) {
                 this.panel?.webview.postMessage({
-                  type: "testResult",
-                  ok: false,
+                  type: "testResult", ok: false,
                   msg: `验证失败: 仅支持自动创建当前登录用户 (${user.data.login}) 名下仓库，当前为 ${owner}/${repo}`
                 });
                 return;
@@ -173,84 +277,55 @@ export class SettingsPanel {
               logInfo(`SettingsPanel.testToken: creating repository ${owner}/${repo} (${visibility})`);
               try {
                 await withTimeout(
-                  octokit.repos.createForAuthenticatedUser({
-                    name: repo,
-                    private: visibility === "private",
-                    auto_init: false,
-                  }),
-                  15_000,
-                  "创建仓库超时（15s）"
+                  octokit.repos.createForAuthenticatedUser({ name: repo, private: visibility === "private", auto_init: false }),
+                  15_000, "创建仓库超时（15s）"
                 );
-                const createdRepo = await withTimeout(
-                  octokit.repos.get({ owner, repo }),
-                  15_000,
-                  "新建仓库权限检查超时（15s）"
-                );
+                const createdRepo = await withTimeout(octokit.repos.get({ owner, repo }), 15_000, "新建仓库权限检查超时（15s）");
                 const createdPerms = createdRepo.data.permissions;
                 const createdCanPush = Boolean(createdPerms?.push || createdPerms?.admin || createdPerms?.maintain);
                 if (!createdCanPush) {
                   const createdPermText = createdPerms
-                    ? [
-                      createdPerms.admin ? "admin" : "",
-                      createdPerms.maintain ? "maintain" : "",
-                      createdPerms.push ? "push" : "",
-                      createdPerms.triage ? "triage" : "",
-                      createdPerms.pull ? "pull" : "",
-                    ].filter(Boolean).join(", ")
+                    ? [createdPerms.admin ? "admin" : "", createdPerms.maintain ? "maintain" : "", createdPerms.push ? "push" : "", createdPerms.triage ? "triage" : "", createdPerms.pull ? "pull" : ""].filter(Boolean).join(", ")
                     : "unknown";
                   this.panel?.webview.postMessage({
-                    type: "testResult",
-                    ok: false,
+                    type: "testResult", ok: false,
                     msg: `验证失败: 仓库已创建但无写权限 (${owner}/${repo}, 当前权限: ${createdPermText})`
                   });
                   return;
                 }
                 logInfo(`SettingsPanel.testToken: repo created and write permission OK for ${owner}/${repo}`);
-                messageText += `｜仓库已创建且可写: ${owner}/${repo}`;
+                messageText += ` | Repo created: ${owner}/${repo}`;
               } catch (createErr: unknown) {
                 const createMsg = createErr instanceof Error ? createErr.message : String(createErr);
                 if (!createMsg.includes("name already exists")) {
                   logError("SettingsPanel.testToken: create repository failed", createErr);
                   this.panel?.webview.postMessage({
-                    type: "testResult",
-                    ok: false,
+                    type: "testResult", ok: false,
                     msg: `验证失败: 自动创建仓库失败 (${owner}/${repo}) - ${createMsg}`
                   });
                   return;
                 }
                 logWarn(`SettingsPanel.testToken: repo already exists, fallback permission check ${owner}/${repo}`);
                 try {
-                  const existingRepo = await withTimeout(
-                    octokit.repos.get({ owner, repo }),
-                    15_000,
-                    "已存在仓库权限检查超时（15s）"
-                  );
+                  const existingRepo = await withTimeout(octokit.repos.get({ owner, repo }), 15_000, "已存在仓库权限检查超时（15s）");
                   const existingPerms = existingRepo.data.permissions;
                   const existingCanPush = Boolean(existingPerms?.push || existingPerms?.admin || existingPerms?.maintain);
                   if (!existingCanPush) {
                     const existingPermText = existingPerms
-                      ? [
-                        existingPerms.admin ? "admin" : "",
-                        existingPerms.maintain ? "maintain" : "",
-                        existingPerms.push ? "push" : "",
-                        existingPerms.triage ? "triage" : "",
-                        existingPerms.pull ? "pull" : "",
-                      ].filter(Boolean).join(", ")
+                      ? [existingPerms.admin ? "admin" : "", existingPerms.maintain ? "maintain" : "", existingPerms.push ? "push" : "", existingPerms.triage ? "triage" : "", existingPerms.pull ? "pull" : ""].filter(Boolean).join(", ")
                       : "unknown";
                     this.panel?.webview.postMessage({
-                      type: "testResult",
-                      ok: false,
+                      type: "testResult", ok: false,
                       msg: `验证失败: 仓库已存在但无写权限 (${owner}/${repo}, 当前权限: ${existingPermText})`
                     });
                     return;
                   }
-                  messageText += `｜仓库已存在且可写: ${owner}/${repo}`;
+                  messageText += ` | Repo OK (existing): ${owner}/${repo}`;
                 } catch (existingErr: unknown) {
                   const existingMsg = existingErr instanceof Error ? existingErr.message : String(existingErr);
                   logError("SettingsPanel.testToken: existing repo permission fallback failed", existingErr);
                   this.panel?.webview.postMessage({
-                    type: "testResult",
-                    ok: false,
+                    type: "testResult", ok: false,
                     msg: `验证失败: 仓库已存在，但无法验证写权限 (${owner}/${repo}) - ${existingMsg}`
                   });
                   return;
@@ -263,12 +338,12 @@ export class SettingsPanel {
           }
         }
 
-        logInfo(`SettingsPanel.testToken: success (${Date.now() - start}ms)`);
+        if (branches.length > 0) {
+          messageText += ` | Branches: ${branches.join(", ")}`;
+        }
+        logInfo(`SettingsPanel.testToken: success (${Date.now() - start}ms), branches=${branches.length}`);
         this.panel?.webview.postMessage({
-          type: "testResult",
-          ok: true,
-          msg: messageText,
-          warning,
+          type: "testResult", ok: true, msg: messageText, warning, branches,
         });
       } catch (e) {
         logError("SettingsPanel.testToken: failed", e);
@@ -276,17 +351,21 @@ export class SettingsPanel {
       }
     });
 
-    this.panel.webview.html = this.render(initial, tokenMask);
+    this.panel.webview.html = this.render(initial, tokenMask, lang);
   }
 
-  private render(initial: SettingsPayload, tokenMask: string): string {
+  private render(initial: SettingsPayload, tokenMask: string, lang: Lang): string {
     const nonce = getNonce();
     const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';`;
     const localPathValue = escapeHtml(initial.localProjectPath);
     const repoValue = escapeHtml(initial.repository);
+    const branchValue = escapeHtml(initial.branch || "master");
     const tokenPlaceholder = tokenMask
       ? escapeHtml(tokenMask) + " (clear to change)"
       : "ghp_xxxxxxxxxxxxxxxxxxxx";
+
+    const I18N_JSON = JSON.stringify(i18n);
+
     return `<!doctype html>
 <html>
 <head>
@@ -320,13 +399,20 @@ export class SettingsPanel {
       padding: 0; display: flex; justify-content: center;
     }
     .page { width: 100%; max-width: 580px; padding: 32px 24px 48px; }
-
-    /* Header */
-    .header { margin-bottom: 28px; }
-    .header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 6px; }
-    .header p { color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
-
-    /* Cards */
+    .header { margin-bottom: 28px; display: flex; align-items: flex-start; justify-content: space-between; }
+    .header-left {}
+    .header-left h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 6px; }
+    .header-left p { color: var(--fg-dim); font-size: 13px; line-height: 1.5; }
+    .lang-switch {
+      display: inline-flex; border: 1px solid var(--input-border); border-radius: 4px; overflow: hidden; flex-shrink: 0; margin-top: 4px;
+    }
+    .lang-btn {
+      padding: 4px 10px; font-size: 11px; cursor: pointer; border: none;
+      background: var(--input-bg); color: var(--fg-dim); transition: all 0.15s;
+    }
+    .lang-btn:first-child { border-right: 1px solid var(--input-border); }
+    .lang-btn.active { background: var(--btn-bg); color: var(--btn-fg); }
+    .lang-btn:hover:not(.active) { color: var(--fg); }
     .card {
       background: var(--card-bg); border: 1px solid var(--card-border);
       border-radius: 8px; margin-bottom: 16px; overflow: hidden;
@@ -349,65 +435,38 @@ export class SettingsPanel {
     .badge.ok { background: rgba(78,201,176,0.15); color: var(--ok); }
     .badge.none { background: rgba(244,135,113,0.12); color: var(--err); }
     .card-body { padding: 18px; }
-
-    /* Form groups */
     .fg { margin-bottom: 16px; }
     .fg:last-child { margin-bottom: 0; }
-    .fg > label {
-      display: block; font-size: 12px; font-weight: 500;
-      color: var(--fg-dim); margin-bottom: 5px; letter-spacing: 0.2px;
-    }
-    .fg .hint {
-      font-size: 11px; color: var(--fg-dim); margin-top: 4px; line-height: 1.4;
-      opacity: 0.8;
-    }
-
-    /* Inputs */
+    .fg > label { display: block; font-size: 12px; font-weight: 500; color: var(--fg-dim); margin-bottom: 5px; letter-spacing: 0.2px; }
+    .fg .hint { font-size: 11px; color: var(--fg-dim); margin-top: 4px; line-height: 1.4; opacity: 0.8; }
     input[type="text"], input[type="password"], select {
       width: 100%; padding: 7px 10px; font-size: 13px; border-radius: 4px;
       background: var(--input-bg); color: var(--input-fg);
-      border: 1px solid var(--input-border); outline: none;
-      transition: border-color 0.15s;
+      border: 1px solid var(--input-border); outline: none; transition: border-color 0.15s;
     }
     input:focus, select:focus { border-color: var(--focus-border); }
-
-    /* Input group (token row) */
     .input-row { display: flex; gap: 6px; }
     .input-row input { flex: 1; }
     .input-row button { flex-shrink: 0; }
-
-    /* Buttons */
     .btn {
       display: inline-flex; align-items: center; justify-content: center;
       padding: 7px 16px; font-size: 12px; font-weight: 500;
-      border-radius: 4px; cursor: pointer; border: none;
-      transition: background 0.15s, opacity 0.15s;
+      border-radius: 4px; cursor: pointer; border: none; transition: background 0.15s, opacity 0.15s;
     }
     .btn:active { opacity: 0.85; }
     .btn-primary { background: var(--btn-bg); color: var(--btn-fg); }
     .btn-primary:hover { background: var(--btn-hover); }
     .btn-secondary { background: var(--btn-sec-bg); color: var(--btn-sec-fg); }
     .btn-secondary:hover { background: var(--btn-sec-hover); }
-    .btn-save {
-      width: 100%; padding: 10px; font-size: 13px; font-weight: 600;
-      border-radius: 6px; margin-top: 8px;
-    }
-
-    /* Toggle switch */
-    .toggle-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 0;
-    }
+    .btn-save { width: 100%; padding: 10px; font-size: 13px; font-weight: 600; border-radius: 6px; margin-top: 8px; }
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; }
     .toggle-row .label { font-size: 13px; font-weight: 500; }
     .toggle-row .desc { font-size: 11px; color: var(--fg-dim); margin-top: 2px; }
-    .switch {
-      position: relative; width: 40px; height: 22px; flex-shrink: 0;
-    }
+    .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
     .switch input { opacity: 0; width: 0; height: 0; }
     .slider {
       position: absolute; inset: 0; cursor: pointer;
-      background: var(--input-border); border-radius: 11px;
-      transition: background 0.2s;
+      background: var(--input-border); border-radius: 11px; transition: background 0.2s;
     }
     .slider::before {
       content: ""; position: absolute; left: 3px; top: 3px;
@@ -416,39 +475,19 @@ export class SettingsPanel {
     }
     .switch input:checked + .slider { background: var(--btn-bg); }
     .switch input:checked + .slider::before { transform: translateX(18px); }
-
-    /* Inline row */
     .inline { display: flex; gap: 12px; align-items: flex-start; }
     .inline > * { flex: 1; }
-
-    /* Checkbox */
-    .ck {
-      display: flex; align-items: center; gap: 8px;
-      font-size: 13px; cursor: pointer; padding: 6px 0; user-select: none;
-    }
-    .ck input[type="checkbox"] {
-      width: 16px; height: 16px; accent-color: var(--btn-bg);
-      cursor: pointer; flex-shrink: 0;
-    }
-
-    /* Interval pills */
+    .ck { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 6px 0; user-select: none; }
+    .ck input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--btn-bg); cursor: pointer; flex-shrink: 0; }
     .pills { display: flex; gap: 6px; flex-wrap: wrap; }
     .pill {
       padding: 5px 14px; font-size: 12px; border-radius: 14px;
       background: var(--input-bg); color: var(--fg-dim);
-      border: 1px solid var(--input-border); cursor: pointer;
-      transition: all 0.15s; user-select: none;
+      border: 1px solid var(--input-border); cursor: pointer; transition: all 0.15s; user-select: none;
     }
-    .pill.active {
-      background: var(--btn-bg); color: var(--btn-fg);
-      border-color: var(--btn-bg);
-    }
+    .pill.active { background: var(--btn-bg); color: var(--btn-fg); border-color: var(--btn-bg); }
     .pill:hover:not(.active) { border-color: var(--focus-border); color: var(--fg); }
-
-    /* Divider */
     .sep { border: none; border-top: 1px solid var(--divider); margin: 16px 0; }
-
-    /* Scope grid */
     .scope-grid { display: flex; gap: 12px; }
     .scope-card {
       flex: 1; display: flex; align-items: center; gap: 10px;
@@ -462,8 +501,6 @@ export class SettingsPanel {
     .scope-icon { font-size: 20px; flex-shrink: 0; }
     .scope-label { font-size: 13px; font-weight: 500; }
     .scope-desc { font-size: 11px; color: var(--fg-dim); margin-top: 1px; }
-
-    /* Toast */
     .toast {
       padding: 10px 14px; border-radius: 6px; font-size: 12px;
       margin-top: 12px; display: none; line-height: 1.4;
@@ -471,8 +508,6 @@ export class SettingsPanel {
     .toast.success { display: block; background: rgba(78,201,176,0.12); color: var(--ok); border: 1px solid rgba(78,201,176,0.3); }
     .toast.error { display: block; background: rgba(244,135,113,0.12); color: var(--err); border: 1px solid rgba(244,135,113,0.3); }
     .toast.info { display: block; background: rgba(204,167,0,0.1); color: var(--warn); border: 1px solid rgba(204,167,0,0.25); }
-
-    /* Interval sub-section */
     .sub-section { padding-left: 4px; margin-top: 12px; }
     .sub-section.hidden { display: none; }
   </style>
@@ -480,52 +515,63 @@ export class SettingsPanel {
 <body>
   <div class="page">
     <div class="header">
-      <h1>Cursor Chronicle</h1>
-      <p>将对话记录和 Skills 自动备份到 GitHub 仓库</p>
+      <div class="header-left">
+        <h1 data-i18n="headerTitle">${t(lang, "headerTitle")}</h1>
+        <p data-i18n="headerDesc">${t(lang, "headerDesc")}</p>
+      </div>
+      <div class="lang-switch">
+        <button class="lang-btn${lang === "zh-CN" ? " active" : ""}" data-lang="zh-CN">中文</button>
+        <button class="lang-btn${lang === "en" ? " active" : ""}" data-lang="en">EN</button>
+      </div>
     </div>
 
-    <!-- Card 1: Local Storage -->
     <div class="card">
       <div class="card-head">
         <span class="step">1</span>
-        <span>本地存储</span>
+        <span data-i18n="localStorageStep">${t(lang, "localStorageStep")}</span>
       </div>
       <div class="card-body">
         <div class="fg">
-          <label>Chronicle 本地目录</label>
+          <label data-i18n="localPathLabel">${t(lang, "localPathLabel")}</label>
           <input id="localPath" type="text" value="${localPathValue}" placeholder="~/.cursor-chronicle" />
-          <p class="hint">对话记录和 Skills 镜像的本地存储路径。支持 <b>~</b> 展开为用户目录。修改后需重新收集。</p>
+          <p class="hint" data-i18n-html="localPathHint">${t(lang, "localPathHint")}</p>
         </div>
       </div>
     </div>
 
-    <!-- Card 2: GitHub Connection -->
     <div class="card">
       <div class="card-head">
         <span class="step">2</span>
-        <span>GitHub 连接</span>
-        <span id="connBadge" class="badge ${tokenMask ? "ok" : "none"}">${tokenMask ? "已连接" : "未连接"}</span>
+        <span data-i18n="githubStep">${t(lang, "githubStep")}</span>
+        <span id="connBadge" class="badge ${tokenMask ? "ok" : "none"}" data-i18n="${tokenMask ? "connected" : "notConnected"}">${tokenMask ? t(lang, "connected") : t(lang, "notConnected")}</span>
       </div>
       <div class="card-body">
         <div class="fg">
-          <label>Personal Access Token</label>
+          <label data-i18n="tokenLabel">${t(lang, "tokenLabel")}</label>
           <div class="input-row">
             <input id="token" type="password" placeholder="${tokenPlaceholder}" />
-            <button class="btn btn-secondary" id="testBtn">验证</button>
+            <button class="btn btn-secondary" id="testBtn" data-i18n="testBtn">${t(lang, "testBtn")}</button>
           </div>
-          <p class="hint">验证时会自动识别 Token 类型。Classic Token: 适合自动创建仓库（需 <b>repo</b>）。Fine-grained Token: 适合最小权限（需 <b>Contents: Read and Write</b>，并授予目标仓库权限）。<br/>创建入口: https://github.com/settings/tokens (Classic) / https://github.com/settings/personal-access-tokens/new (Fine-grained)</p>
+          <p class="hint" data-i18n-html="tokenHint">${t(lang, "tokenHint")}</p>
           <div id="testResult" class="toast"></div>
         </div>
         <div class="fg">
-          <label>目标仓库 (owner/repo)</label>
+          <label data-i18n="repoLabel">${t(lang, "repoLabel")}</label>
           <input id="repo" type="text" value="${repoValue}" placeholder="your-username/cursor-chronicle-data" />
+        </div>
+        <div class="fg">
+          <label data-i18n="branchLabel">${t(lang, "branchLabel")}</label>
+          <select id="branch">
+            <option value="${branchValue}" selected>${branchValue}</option>
+          </select>
+          <p class="hint" data-i18n-html="branchHint">${t(lang, "branchHint")}</p>
         </div>
         <div class="inline">
           <div class="fg">
-            <label class="ck"><input id="createRepo" type="checkbox" ${initial.createRepoIfMissing ? "checked" : ""}/> 自动创建仓库</label>
+            <label class="ck"><input id="createRepo" type="checkbox" ${initial.createRepoIfMissing ? "checked" : ""}/> <span data-i18n="createRepoLabel">${t(lang, "createRepoLabel")}</span></label>
           </div>
           <div class="fg">
-            <label>仓库可见性</label>
+            <label data-i18n="visibilityLabel">${t(lang, "visibilityLabel")}</label>
             <select id="visibility">
               <option value="private" ${initial.visibility === "private" ? "selected" : ""}>Private</option>
               <option value="public" ${initial.visibility === "public" ? "selected" : ""}>Public</option>
@@ -535,17 +581,16 @@ export class SettingsPanel {
       </div>
     </div>
 
-    <!-- Card 3: Sync Settings -->
     <div class="card">
       <div class="card-head">
         <span class="step">3</span>
-        <span>同步配置</span>
+        <span data-i18n="syncStep">${t(lang, "syncStep")}</span>
       </div>
       <div class="card-body">
         <div class="toggle-row">
           <div>
-            <div class="label">自动同步</div>
-            <div class="desc">按设定间隔自动将数据同步到 GitHub</div>
+            <div class="label" data-i18n="autoSyncLabel">${t(lang, "autoSyncLabel")}</div>
+            <div class="desc" data-i18n="autoSyncDesc">${t(lang, "autoSyncDesc")}</div>
           </div>
           <label class="switch">
             <input id="autoSync" type="checkbox" ${initial.autoSync ? "checked" : ""}/>
@@ -554,40 +599,40 @@ export class SettingsPanel {
         </div>
 
         <div id="intervalSection" class="sub-section${initial.autoSync ? "" : " hidden"}">
-          <label style="font-size:12px;color:var(--fg-dim);margin-bottom:8px;display:block;">同步间隔</label>
+          <label style="font-size:12px;color:var(--fg-dim);margin-bottom:8px;display:block;" data-i18n="intervalLabel">${t(lang, "intervalLabel")}</label>
           <div class="pills">
-            <span class="pill${initial.intervalMinutes === 5 ? " active" : ""}" data-val="5">5 分钟</span>
-            <span class="pill${initial.intervalMinutes === 10 ? " active" : ""}" data-val="10">10 分钟</span>
-            <span class="pill${initial.intervalMinutes === 30 ? " active" : ""}" data-val="30">30 分钟</span>
-            <span class="pill${initial.intervalMinutes === 60 ? " active" : ""}" data-val="60">60 分钟</span>
+            <span class="pill${initial.intervalMinutes === 5 ? " active" : ""}" data-val="5" data-i18n="min5">${t(lang, "min5")}</span>
+            <span class="pill${initial.intervalMinutes === 10 ? " active" : ""}" data-val="10" data-i18n="min10">${t(lang, "min10")}</span>
+            <span class="pill${initial.intervalMinutes === 30 ? " active" : ""}" data-val="30" data-i18n="min30">${t(lang, "min30")}</span>
+            <span class="pill${initial.intervalMinutes === 60 ? " active" : ""}" data-val="60" data-i18n="min60">${t(lang, "min60")}</span>
           </div>
         </div>
 
         <hr class="sep" />
 
-        <label style="font-size:12px;color:var(--fg-dim);margin-bottom:10px;display:block;">同步范围</label>
+        <label style="font-size:12px;color:var(--fg-dim);margin-bottom:10px;display:block;" data-i18n="scopeLabel">${t(lang, "scopeLabel")}</label>
         <div class="scope-grid">
           <label class="scope-card${initial.syncConversations ? " on" : ""}" id="scopeConv">
             <input id="syncConv" type="checkbox" ${initial.syncConversations ? "checked" : ""}/>
             <span class="scope-icon">&#128172;</span>
             <div>
-              <div class="scope-label">对话记录</div>
-              <div class="scope-desc">AI Conversations</div>
+              <div class="scope-label" data-i18n="scopeConvLabel">${t(lang, "scopeConvLabel")}</div>
+              <div class="scope-desc" data-i18n="scopeConvDesc">${t(lang, "scopeConvDesc")}</div>
             </div>
           </label>
           <label class="scope-card${initial.syncSkills ? " on" : ""}" id="scopeSkill">
             <input id="syncSkills" type="checkbox" ${initial.syncSkills ? "checked" : ""}/>
             <span class="scope-icon">&#128736;</span>
             <div>
-              <div class="scope-label">Skills</div>
-              <div class="scope-desc">Custom Agent Skills</div>
+              <div class="scope-label" data-i18n="scopeSkillLabel">${t(lang, "scopeSkillLabel")}</div>
+              <div class="scope-desc" data-i18n="scopeSkillDesc">${t(lang, "scopeSkillDesc")}</div>
             </div>
           </label>
         </div>
       </div>
     </div>
 
-    <button class="btn btn-primary btn-save" id="saveBtn">保存设置</button>
+    <button class="btn btn-primary btn-save" id="saveBtn" data-i18n="saveBtn">${t(lang, "saveBtn")}</button>
     <div id="saveResult" class="toast"></div>
   </div>
 
@@ -598,20 +643,39 @@ export class SettingsPanel {
     const uiError = (msg) => vscode.postMessage({ type: 'uiError', msg });
     const on = (id, event, handler) => {
       const el = $(id);
-      if (!el) {
-        uiError('missing element: ' + id);
-        return;
-      }
+      if (!el) { uiError('missing element: ' + id); return; }
       el.addEventListener(event, handler);
     };
+
+    const I18N = ${I18N_JSON};
+    let currentLang = '${lang}';
     let hasExistingToken = ${tokenMask ? "true" : "false"};
     let selectedInterval = ${initial.intervalMinutes};
-    uiLog('script initialized');
-    window.addEventListener('error', (ev) => {
-      uiError('window error: ' + (ev.message || 'unknown'));
+    uiLog('script initialized, lang=' + currentLang);
+
+    window.addEventListener('error', (ev) => { uiError('window error: ' + (ev.message || 'unknown')); });
+
+    function applyLang(lang) {
+      currentLang = lang;
+      const strings = I18N[lang] || I18N['en'];
+      document.querySelectorAll('[data-i18n]').forEach((el) => {
+        const key = el.getAttribute('data-i18n');
+        if (strings[key]) el.textContent = strings[key];
+      });
+      document.querySelectorAll('[data-i18n-html]').forEach((el) => {
+        const key = el.getAttribute('data-i18n-html');
+        if (strings[key]) el.innerHTML = strings[key];
+      });
+      document.querySelectorAll('.lang-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.lang === lang);
+      });
+      vscode.postMessage({ type: 'langChange', lang });
+    }
+
+    document.querySelectorAll('.lang-btn').forEach((btn) => {
+      btn.addEventListener('click', () => applyLang(btn.dataset.lang));
     });
 
-    /* Token focus: fill masked placeholder for editing */
     on('token', 'focus', () => {
       if (hasExistingToken && !$('token').value) {
         $('token').value = '__MASKED__';
@@ -619,15 +683,13 @@ export class SettingsPanel {
       }
     });
 
-    /* Test token */
     on('testBtn', 'click', () => {
       const token = $('token').value;
       $('testResult').className = 'toast info';
-      $('testResult').textContent = '验证中...';
+      $('testResult').textContent = I18N[currentLang]?.testing || 'Verifying...';
       $('testResult').style.display = 'block';
       vscode.postMessage({
-        type: 'testToken',
-        token,
+        type: 'testToken', token, lang: currentLang,
         payload: {
           createRepoIfMissing: $('createRepo').checked,
           repository: $('repo').value,
@@ -636,12 +698,10 @@ export class SettingsPanel {
       });
     });
 
-    /* Auto-sync toggle → show/hide interval */
     on('autoSync', 'change', () => {
       $('intervalSection').classList.toggle('hidden', !$('autoSync').checked);
     });
 
-    /* Interval pills */
     document.querySelectorAll('.pill').forEach((pill) => {
       pill.addEventListener('click', () => {
         document.querySelectorAll('.pill').forEach((p) => p.classList.remove('active'));
@@ -650,11 +710,9 @@ export class SettingsPanel {
       });
     });
 
-    /* Scope cards */
     on('syncConv', 'change', () => { $('scopeConv').classList.toggle('on', $('syncConv').checked); });
     on('syncSkills', 'change', () => { $('scopeSkill').classList.toggle('on', $('syncSkills').checked); });
 
-    /* Save */
     on('saveBtn', 'click', () => {
       const tokenVal = $('token').value;
       vscode.postMessage({
@@ -663,6 +721,7 @@ export class SettingsPanel {
         payload: {
           localProjectPath: $('localPath').value,
           repository: $('repo').value,
+          branch: $('branch').value || 'master',
           createRepoIfMissing: $('createRepo').checked,
           visibility: $('visibility').value,
           autoSync: $('autoSync').checked,
@@ -673,7 +732,6 @@ export class SettingsPanel {
       });
     });
 
-    /* Messages from extension */
     window.addEventListener('message', (event) => {
       const msg = event.data;
       if (msg.type === 'testResult') {
@@ -682,15 +740,43 @@ export class SettingsPanel {
         $('testResult').textContent = text;
         if (msg.ok) {
           $('connBadge').className = 'badge ok';
-          $('connBadge').textContent = '已连接';
+          $('connBadge').textContent = I18N[currentLang]?.connected || 'Connected';
+        }
+        if (msg.branches && msg.branches.length > 0) {
+          const sel = $('branch');
+          const curVal = sel.value;
+          sel.innerHTML = '';
+          msg.branches.forEach((b) => {
+            const opt = document.createElement('option');
+            opt.value = b;
+            opt.textContent = b;
+            if (b === curVal) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          if (!msg.branches.includes(curVal) && msg.branches.length > 0) {
+            sel.value = msg.branches[0];
+          }
+          uiLog('branches loaded: ' + msg.branches.join(', '));
+        } else if (msg.ok) {
+          uiLog('no branches returned from remote');
         }
       } else if (msg.type === 'saved') {
         $('saveResult').className = 'toast success';
-        $('saveResult').textContent = '设置已保存！';
+        $('saveResult').textContent = I18N[currentLang]?.savedMsg || 'Settings saved!';
         setTimeout(() => { $('saveResult').style.display = 'none'; }, 3000);
       } else if (msg.type === 'setData') {
         $('localPath').value = msg.data.localProjectPath || '~/.cursor-chronicle';
         $('repo').value = msg.data.repository || '';
+        const branchSel = $('branch');
+        const branchVal = msg.data.branch || 'master';
+        if (!Array.from(branchSel.options).some((o) => o.value === branchVal)) {
+          branchSel.innerHTML = '';
+          const opt = document.createElement('option');
+          opt.value = branchVal;
+          opt.textContent = branchVal;
+          branchSel.appendChild(opt);
+        }
+        branchSel.value = branchVal;
         $('createRepo').checked = msg.data.createRepoIfMissing;
         $('visibility').value = msg.data.visibility;
         $('autoSync').checked = msg.data.autoSync;
@@ -706,8 +792,9 @@ export class SettingsPanel {
         if (msg.tokenMask) {
           hasExistingToken = true;
           $('connBadge').className = 'badge ok';
-          $('connBadge').textContent = '已连接';
+          $('connBadge').textContent = I18N[currentLang]?.connected || 'Connected';
         }
+        if (msg.lang) applyLang(msg.lang);
       }
     });
   </script>

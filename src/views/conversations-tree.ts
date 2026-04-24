@@ -1,6 +1,12 @@
 import * as vscode from "vscode";
-import { LocalStore, LocalConversationEntry, ConversationSource } from "../services/local-store";
+import os from "node:os";
+import { LocalStore, LocalConversationEntry } from "../services/local-store";
 import { SyncStateService } from "../services/sync-state";
+
+function getRepoLabel(): string {
+  const repo = vscode.workspace.getConfiguration("cursorChronicle").get<string>("github.repository", "");
+  return repo || "GitHub";
+}
 
 type TreeItem = LocationNode | ProjectNode | ConversationNode | EmptyConversationNode;
 
@@ -49,7 +55,8 @@ export class ConversationNode extends vscode.TreeItem {
   constructor(public readonly entry: LocalConversationEntry, synced: boolean) {
     super(entry.displayName, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "conversation";
-    this.tooltip = `${entry.filePath}\n${synced ? "✓ Synced" : "○ Not synced"}`;
+    const hostLabel = entry.frontmatter.hostname ? `Host: ${entry.frontmatter.hostname}` : "";
+    this.tooltip = `${entry.filePath}\n${hostLabel}\n${synced ? "✓ Synced" : "○ Not synced"}`.trim();
     this.iconPath = new vscode.ThemeIcon(
       synced ? "cloud" : "circle-outline",
       synced ? new vscode.ThemeColor("charts.green") : undefined
@@ -69,17 +76,6 @@ class EmptyConversationNode extends vscode.TreeItem {
     this.description = "运行「收集到本地」或同步";
     this.iconPath = new vscode.ThemeIcon("info");
   }
-}
-
-function resolveRemoteHost(): string {
-  const authority = vscode.workspace.workspaceFolders?.[0]?.uri.authority ?? "";
-  return authority.replace(/^[^+]*\+/, "") || vscode.env.remoteName || "remote";
-}
-
-function inferSource(entry: LocalConversationEntry): ConversationSource {
-  if (entry.frontmatter.source) return entry.frontmatter.source;
-  if (entry.frontmatter.workspaceUri?.startsWith("vscode-remote://")) return "remote";
-  return "local";
 }
 
 function isCurrentWorkspaceEntry(
@@ -143,29 +139,46 @@ export class ConversationsTreeProvider implements vscode.TreeDataProvider<TreeIt
       return [new EmptyConversationNode()];
     }
 
-    const remoteGrouped = new Map<string, ConversationNode[]>();
-    const localGrouped = new Map<string, ConversationNode[]>();
+    const currentHostname = os.hostname();
+    const hostGroups = new Map<string, Map<string, ConversationNode[]>>();
 
     for (const entry of entries) {
       const synced = Boolean(state.conversations?.[entry.frontmatter.composerId]);
       const node = new ConversationNode(entry, synced);
-      const target = inferSource(entry) === "remote" ? remoteGrouped : localGrouped;
-      const arr = target.get(entry.projectName) ?? [];
+      const host = entry.frontmatter.hostname || "__repo__";
+      if (!hostGroups.has(host)) hostGroups.set(host, new Map());
+      const projectMap = hostGroups.get(host)!;
+      const arr = projectMap.get(entry.projectName) ?? [];
       arr.push(node);
-      target.set(entry.projectName, arr);
+      projectMap.set(entry.projectName, arr);
     }
 
     const root: TreeItem[] = [];
 
-    if (remoteGrouped.size > 0) {
-      const host = resolveRemoteHost();
-      const projects = buildProjectNodes(remoteGrouped, folders);
-      root.push(new LocationNode(`远程 · ${host}`, "remote", projects, false));
-    }
+    // Current host first (expanded), other hosts after (collapsed)
+    const sortedHosts = [...hostGroups.keys()].sort((a, b) => {
+      if (a === currentHostname) return -1;
+      if (b === currentHostname) return 1;
+      return a.localeCompare(b);
+    });
 
-    if (localGrouped.size > 0) {
-      const projects = buildProjectNodes(localGrouped, folders);
-      root.push(new LocationNode("本地", "window", projects, remoteGrouped.size > 0));
+    for (const host of sortedHosts) {
+      const projectMap = hostGroups.get(host)!;
+      const projects = buildProjectNodes(projectMap, folders);
+      const isCurrentHost = host === currentHostname;
+      let icon: string;
+      let label: string;
+      if (isCurrentHost) {
+        icon = "vm";
+        label = `${host} (本机)`;
+      } else if (host === "__repo__") {
+        icon = "repo";
+        label = getRepoLabel();
+      } else {
+        icon = "remote-explorer";
+        label = host;
+      }
+      root.push(new LocationNode(label, icon, projects, !isCurrentHost));
     }
 
     if (root.length === 0) {

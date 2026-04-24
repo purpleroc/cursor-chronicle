@@ -29,11 +29,19 @@ export class CollectService {
     if (this.dbReader.available) {
       const metas = this.dbReader.listAll();
       logDebug(`CollectService: found ${metas.length} conversations in SQLite`);
+      let skippedUp = 0;
+      let skippedEmpty = 0;
       for (const meta of metas) {
         seen.add(meta.composerId);
-        if (await this.localStore.shouldSkipConversation(meta)) continue;
+        if (await this.localStore.shouldSkipConversation(meta)) {
+          skippedUp++;
+          continue;
+        }
         const bubbles = this.dbReader.readBubbles(meta.composerId);
-        if (bubbles.length === 0) continue;
+        if (bubbles.length === 0) {
+          skippedEmpty++;
+          continue;
+        }
         const conv = metaToConversation(meta, bubbles);
         const md = this.mdGen.generate(conv);
         await this.localStore.writeConversation(
@@ -46,6 +54,7 @@ export class CollectService {
         );
         conversationsWritten += 1;
       }
+      logDebug(`CollectService: SQLite — written=${conversationsWritten}, skippedUnchanged=${skippedUp}, skippedEmpty=${skippedEmpty}`);
     } else {
       logDebug("CollectService: SQLite DB not available, skipping DB scan");
     }
@@ -64,12 +73,25 @@ export class CollectService {
     const wUri = wf?.uri.toString();
     const wPath = wf?.uri.fsPath;
 
+    let jsonlWritten = 0;
+    let jsonlSkippedSeen = 0;
+    let jsonlSkippedEmpty = 0;
+    let jsonlSkippedUp = 0;
     for (const scan of jsonlScans) {
-      if (seen.has(scan.sessionId)) continue;
+      if (seen.has(scan.sessionId)) {
+        jsonlSkippedSeen++;
+        continue;
+      }
       const conv = await this.parser.parse(scan);
-      if (!conv || conv.turns.length === 0) continue;
+      if (!conv || conv.turns.length === 0) {
+        jsonlSkippedEmpty++;
+        continue;
+      }
       const ts = conv.createdAt.getTime();
-      if (await this.localStore.shouldSkipJsonl(scan.sessionId, ts)) continue;
+      if (await this.localStore.shouldSkipJsonl(scan.sessionId, ts)) {
+        jsonlSkippedUp++;
+        continue;
+      }
 
       const md = this.mdGen.generate(conv);
       await this.localStore.writeConversationFromJsonl(
@@ -84,8 +106,10 @@ export class CollectService {
         isRemote ? "remote" : "local"
       );
       seen.add(scan.sessionId);
+      jsonlWritten += 1;
       conversationsWritten += 1;
     }
+    logDebug(`CollectService: JSONL — written=${jsonlWritten}, skippedDuplicate=${jsonlSkippedSeen}, skippedEmpty=${jsonlSkippedEmpty}, skippedUnchanged=${jsonlSkippedUp}`);
 
     const remoteHome = await detectRemoteHome();
     logDebug(`CollectService: collecting skills (remoteHome=${remoteHome?.toString() ?? "none"})`);

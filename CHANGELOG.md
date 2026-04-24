@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.6]
+
+- Branch control: configurable sync branch (default `master`); auto-clone existing remote repo on first sync to avoid branch conflicts across machines
+- Import conversations from Markdown files via sidebar toolbar (supports multi-select, auto-generates frontmatter if missing)
+- Import Skills from Markdown files — creates `~/.cursor/skills/<name>/SKILL.md`
+- Settings page i18n: Chinese / English toggle with one-click language switch
+- Rewrite README with bilingual content and updated feature documentation
+
 ## [0.0.5]
 
 - Git-based GitHub sync (commit/push) instead of per-file API uploads
