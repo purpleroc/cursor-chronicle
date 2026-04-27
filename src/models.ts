@@ -59,4 +59,6 @@ export interface RemoteSkillMeta {
   description: string;
   updatedAt: string;
   files: string[];
+  /** MD5 hash per file — used to detect actual content changes. */
+  fileHashes?: Record<string, string>;
 }

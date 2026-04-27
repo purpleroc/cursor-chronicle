@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.0.7]
+
+- Fix skills sync producing unnecessary commits: use per-file MD5 hashes in `skills-index.json` to detect actual content changes; `updatedAt` and index file are only updated when file content differs, eliminating empty commits caused by timestamp-only changes
+
 ## [0.0.6]
 
 - Branch control: configurable sync branch (default `master`); auto-clone existing remote repo on first sync to avoid branch conflicts across machines

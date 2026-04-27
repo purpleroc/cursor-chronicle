@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import * as vscode from "vscode";
 
@@ -599,35 +600,78 @@ async function executeGitHubSync(
   logInfo("executeGitHubSync: completed");
 }
 
+function md5(content: string): string {
+  return createHash("md5").update(content).digest("hex");
+}
+
 async function prepareSkillsForPublish(
   localStore: LocalStore,
   skillsCollector: SkillsCollector,
   github: GitHubSyncService
 ): Promise<void> {
   const merged = await mergeSkillsForIndex(skillsCollector, github);
+
+  const prevIndex = await loadPreviousSkillsIndex(localStore);
   const metas: RemoteSkillMeta[] = [];
+  let hasAnyChange = false;
 
   for (const skill of merged) {
     const dirName = github.skillRemoteDir(skill);
+    const prevMeta = prevIndex.get(dirName);
+    const prevHashes = prevMeta?.fileHashes ?? {};
+    const curHashes: Record<string, string> = {};
+    let skillChanged = false;
+
     for (const relativeFile of skill.files) {
       try {
         const content = await readSkillFile(skill, relativeFile);
-        await localStore.writePublishSkill(dirName, relativeFile, content);
+        const hash = md5(content);
+        curHashes[relativeFile] = hash;
+
+        if (prevHashes[relativeFile] !== hash) {
+          skillChanged = true;
+          await localStore.writePublishSkill(dirName, relativeFile, content);
+        }
       } catch {
         continue;
       }
     }
+
     const description = await extractLocalSkillDescription(skill);
+    if (description !== (prevMeta?.description ?? "")) {
+      skillChanged = true;
+    }
+
+    if (skillChanged) {
+      hasAnyChange = true;
+    }
+
     metas.push({
       name: dirName,
       description,
-      updatedAt: new Date().toISOString(),
+      updatedAt: skillChanged ? new Date().toISOString() : (prevMeta?.updatedAt ?? new Date().toISOString()),
       files: skill.files,
+      fileHashes: curHashes,
     });
   }
 
-  const indexContent = JSON.stringify({ skills: metas }, null, 2);
-  await localStore.writePublishSkillsIndex(indexContent);
+  if (hasAnyChange || metas.length !== prevIndex.size) {
+    const indexContent = JSON.stringify({ skills: metas }, null, 2);
+    await localStore.writePublishSkillsIndex(indexContent);
+  }
+}
+
+async function loadPreviousSkillsIndex(localStore: LocalStore): Promise<Map<string, RemoteSkillMeta>> {
+  const map = new Map<string, RemoteSkillMeta>();
+  const raw = await localStore.readPublishSkillsIndex();
+  if (!raw) return map;
+  try {
+    const parsed = JSON.parse(raw) as { skills?: RemoteSkillMeta[] };
+    if (Array.isArray(parsed.skills)) {
+      for (const s of parsed.skills) map.set(s.name, s);
+    }
+  } catch { /* corrupted index, treat as empty */ }
+  return map;
 }
 
 async function extractLocalSkillDescription(skill: SkillRecord): Promise<string> {

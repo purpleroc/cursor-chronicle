@@ -302,6 +302,15 @@ export class LocalStore {
     await fs.writeFile(outPath, content, "utf8");
   }
 
+  async readPublishSkillsIndex(): Promise<string | null> {
+    const outPath = path.join(this.getSyncDir(), "skills", "skills-index.json");
+    try {
+      return await fs.readFile(outPath, "utf8");
+    } catch {
+      return null;
+    }
+  }
+
   async writePublishSkillsIndex(jsonContent: string): Promise<void> {
     const outPath = path.join(this.getSyncDir(), "skills", "skills-index.json");
     await fs.mkdir(path.dirname(outPath), { recursive: true });
