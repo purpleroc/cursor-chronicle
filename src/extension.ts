@@ -138,9 +138,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       applySyncSubdir(localStore);
       if (payload.branch) {
         try {
-          await localStore.gitSwitchBranch(payload.branch);
+          await localStore.ensureRemoteBranch(payload.branch);
         } catch (e) {
-          logWarn(`Settings save: branch switch to ${payload.branch} failed: ${e instanceof Error ? e.message : e}`);
+          logWarn(`Settings save: ensureRemoteBranch "${payload.branch}" failed: ${e instanceof Error ? e.message : e}`);
         }
       }
       restartAutoSync(runCollectAndSync);

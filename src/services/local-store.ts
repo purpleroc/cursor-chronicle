@@ -322,14 +322,16 @@ export class LocalStore {
     await fs.mkdir(cwd, { recursive: true });
     const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
 
+    const resolvedBranch = await this.detectRemoteDefaultBranch(url, branch);
+
     const hasGit = await fs.access(path.join(cwd, ".git")).then(() => true, () => false);
 
     if (!hasGit) {
-      const cloned = await this.tryCloneInto(url, branch, cwd);
+      const cloned = await this.tryCloneInto(url, resolvedBranch, cwd);
       if (!cloned) {
         await execFileAsync("git", ["init"], { cwd, timeout: 10_000 });
         try {
-          await execFileAsync("git", ["branch", "-M", branch], { cwd, timeout: 5_000 });
+          await execFileAsync("git", ["branch", "-M", resolvedBranch], { cwd, timeout: 5_000 });
         } catch {
           logDebug("LocalStore.gitConfigureRemote: branch rename skipped (no commits yet)");
         }
@@ -354,7 +356,23 @@ export class LocalStore {
       await execFileAsync("git", ["config", "user.name", "Cursor Chronicle"], { cwd, timeout: 5_000 });
     }
 
-    logDebug(`LocalStore.gitConfigureRemote: configured for ${owner}/${repo} branch=${branch}`);
+    logDebug(`LocalStore.gitConfigureRemote: configured for ${owner}/${repo} branch=${resolvedBranch}`);
+  }
+
+  private async detectRemoteDefaultBranch(url: string, fallback: string): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync("git", ["ls-remote", "--symref", url, "HEAD"], {
+        timeout: 15_000, encoding: "utf8",
+      });
+      const match = (stdout as string).match(/ref:\s+refs\/heads\/(\S+)\s+HEAD/);
+      if (match) {
+        logDebug(`LocalStore.detectRemoteDefaultBranch: detected "${match[1]}"`);
+        return match[1];
+      }
+    } catch {
+      logDebug("LocalStore.detectRemoteDefaultBranch: ls-remote failed (new/empty repo?), using fallback");
+    }
+    return fallback;
   }
 
   private async tryCloneInto(url: string, branch: string, targetDir: string): Promise<boolean> {
@@ -429,6 +447,34 @@ export class LocalStore {
     }
   }
 
+  async ensureRemoteBranch(branch: string): Promise<void> {
+    await this.gitSwitchBranch(branch);
+    const cwd = this.getSyncDir();
+    const hasGit = await fs.access(path.join(cwd, ".git")).then(() => true, () => false);
+    if (!hasGit) return;
+
+    try {
+      const { stdout } = await execFileAsync("git", ["ls-remote", "--heads", "origin", branch], {
+        cwd, timeout: 15_000, encoding: "utf8",
+      });
+      if ((stdout as string).trim()) {
+        logInfo(`LocalStore.ensureRemoteBranch: remote branch "${branch}" exists`);
+        return;
+      }
+    } catch {
+      logDebug("LocalStore.ensureRemoteBranch: ls-remote failed, will try to create remote branch");
+    }
+
+    logInfo(`LocalStore.ensureRemoteBranch: remote branch "${branch}" not found, creating...`);
+    try {
+      await execFileAsync("git", ["rev-parse", "HEAD"], { cwd, timeout: 5_000 });
+    } catch {
+      await execFileAsync("git", ["commit", "--allow-empty", "-m", "chore: initialize branch"], { cwd, timeout: 10_000 });
+    }
+    await execFileAsync("git", ["push", "-u", "origin", branch], { cwd, timeout: 120_000 });
+    logInfo(`LocalStore.ensureRemoteBranch: remote branch "${branch}" created`);
+  }
+
   async gitAddAndCommit(message: string): Promise<{ committed: boolean; filesChanged: number }> {
     const cwd = this.getSyncDir();
     await execFileAsync("git", ["add", "-A"], { cwd, timeout: 30_000 });
@@ -459,13 +505,17 @@ export class LocalStore {
       return;
     }
     const targetBranch = branch || await this.gitCurrentBranch();
+
+    await this.gitFetchSafe(cwd);
+
     try {
       await execFileAsync("git", ["push", "-u", "origin", targetBranch], { cwd, timeout: 120_000 });
       logInfo("LocalStore.gitPush: pushed successfully");
       return;
     } catch {
-      logWarn("LocalStore.gitPush: push rejected, attempting pull --allow-unrelated-histories");
+      logWarn("LocalStore.gitPush: push rejected, attempting pull");
     }
+
     try {
       await execFileAsync("git", ["pull", "--no-edit", "--allow-unrelated-histories", "origin", targetBranch], {
         cwd, timeout: 60_000,
@@ -475,9 +525,23 @@ export class LocalStore {
       return;
     } catch {
       logWarn("LocalStore.gitPush: merge conflict, force pushing (local is source of truth)");
+      try {
+        await execFileAsync("git", ["merge", "--abort"], { cwd, timeout: 5_000 });
+      } catch { /* no merge in progress */ }
     }
+
+    await this.gitFetchSafe(cwd);
     await execFileAsync("git", ["push", "--force", "-u", "origin", targetBranch], { cwd, timeout: 120_000 });
     logInfo("LocalStore.gitPush: force pushed successfully");
+  }
+
+  private async gitFetchSafe(cwd: string): Promise<void> {
+    try {
+      await execFileAsync("git", ["fetch", "origin"], { cwd, timeout: 30_000 });
+      logDebug("LocalStore.gitFetch: fetched successfully");
+    } catch {
+      logDebug("LocalStore.gitFetch: fetch failed (may be offline or empty repo)");
+    }
   }
 
   private async gitCurrentBranch(): Promise<string> {

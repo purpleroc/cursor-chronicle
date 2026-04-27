@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.8]
+
+- Change default sync branch from `main` to `master`
+- Branch selector now supports both dropdown and free-text input (HTML5 datalist combo box)
+- Auto-create remote branch if it doesn't exist: on save, `ensureRemoteBranch` checks remote via `git ls-remote --heads` and pushes to create the branch when missing
+- Fix `git push --force` failing with "cannot lock ref" error: add `git fetch origin` before push to ensure remote tracking refs are up-to-date
+- Add `git merge --abort` on pull conflict before force push to avoid pushing in a dirty merge state
+- Extract `gitFetchSafe` helper for resilient fetch (silent fail when offline or empty repo)
+
 ## [0.0.7]
 
 - Fix skills sync producing unnecessary commits: use per-file MD5 hashes in `skills-index.json` to detect actual content changes; `updatedAt` and index file are only updated when file content differs, eliminating empty commits caused by timestamp-only changes

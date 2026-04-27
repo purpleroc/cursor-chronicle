@@ -561,9 +561,8 @@ export class SettingsPanel {
         </div>
         <div class="fg">
           <label data-i18n="branchLabel">${t(lang, "branchLabel")}</label>
-          <select id="branch">
-            <option value="${branchValue}" selected>${branchValue}</option>
-          </select>
+          <input id="branch" type="text" list="branchList" value="${branchValue}" placeholder="master" />
+          <datalist id="branchList"></datalist>
           <p class="hint" data-i18n-html="branchHint">${t(lang, "branchHint")}</p>
         </div>
         <div class="inline">
@@ -721,7 +720,7 @@ export class SettingsPanel {
         payload: {
           localProjectPath: $('localPath').value,
           repository: $('repo').value,
-          branch: $('branch').value || 'master',
+          branch: $('branch').value.trim() || 'master',
           createRepoIfMissing: $('createRepo').checked,
           visibility: $('visibility').value,
           autoSync: $('autoSync').checked,
@@ -743,18 +742,16 @@ export class SettingsPanel {
           $('connBadge').textContent = I18N[currentLang]?.connected || 'Connected';
         }
         if (msg.branches && msg.branches.length > 0) {
-          const sel = $('branch');
-          const curVal = sel.value;
-          sel.innerHTML = '';
+          const dl = $('branchList');
+          dl.innerHTML = '';
           msg.branches.forEach((b) => {
             const opt = document.createElement('option');
             opt.value = b;
-            opt.textContent = b;
-            if (b === curVal) opt.selected = true;
-            sel.appendChild(opt);
+            dl.appendChild(opt);
           });
-          if (!msg.branches.includes(curVal) && msg.branches.length > 0) {
-            sel.value = msg.branches[0];
+          const input = $('branch');
+          if (!input.value.trim() || (!msg.branches.includes(input.value) && msg.branches.length > 0)) {
+            input.value = msg.branches[0];
           }
           uiLog('branches loaded: ' + msg.branches.join(', '));
         } else if (msg.ok) {
@@ -767,16 +764,8 @@ export class SettingsPanel {
       } else if (msg.type === 'setData') {
         $('localPath').value = msg.data.localProjectPath || '~/.cursor-chronicle';
         $('repo').value = msg.data.repository || '';
-        const branchSel = $('branch');
-        const branchVal = msg.data.branch || 'master';
-        if (!Array.from(branchSel.options).some((o) => o.value === branchVal)) {
-          branchSel.innerHTML = '';
-          const opt = document.createElement('option');
-          opt.value = branchVal;
-          opt.textContent = branchVal;
-          branchSel.appendChild(opt);
-        }
-        branchSel.value = branchVal;
+        const branchInput = $('branch');
+        branchInput.value = msg.data.branch || 'master';
         $('createRepo').checked = msg.data.createRepoIfMissing;
         $('visibility').value = msg.data.visibility;
         $('autoSync').checked = msg.data.autoSync;

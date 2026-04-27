@@ -2,7 +2,7 @@
   "name": "cursor-chronicle-sync",
   "displayName": "Cursor Chronicle Sync",
   "description": "Backup Cursor AI conversations & Skills to GitHub. Markdown export, incremental sync, Skills management and Remote-SSH support. 将 Cursor AI 对话与自定义 Skills 自动备份到 GitHub，支持 Markdown 导出、增量同步、Skills 安装管理和 Remote-SSH 环境。",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "purpleroc",
   "repository": {
     "type": "git",
