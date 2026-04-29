@@ -2,8 +2,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { SyncState } from "../models";
+import { getUserHome } from "../utils/local-path";
 
-const STATE_DIR = path.join(process.env.HOME ?? "", ".cursor", "cursor-chronicle");
+const STATE_DIR = path.join(getUserHome(), ".cursor", "cursor-chronicle");
 const STATE_PATH = path.join(STATE_DIR, "sync-state.json");
 
 export class SyncStateService {

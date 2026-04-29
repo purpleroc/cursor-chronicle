@@ -510,6 +510,18 @@ export class SettingsPanel {
     .toast.info { display: block; background: rgba(204,167,0,0.1); color: var(--warn); border: 1px solid rgba(204,167,0,0.25); }
     .sub-section { padding-left: 4px; margin-top: 12px; }
     .sub-section.hidden { display: none; }
+    .branch-wrapper { position: relative; }
+    .branch-dropdown {
+      position: absolute; top: 100%; left: 0; right: 0; z-index: 9999;
+      background: var(--input-bg); border: 1px solid var(--focus-border);
+      border-top: none; border-radius: 0 0 4px 4px;
+      max-height: 180px; overflow-y: auto; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+    .branch-dropdown.hidden { display: none; }
+    .branch-option {
+      padding: 6px 10px; cursor: pointer; font-size: 13px; color: var(--input-fg);
+    }
+    .branch-option:hover { background: var(--btn-bg); color: var(--btn-fg); }
   </style>
 </head>
 <body>
@@ -561,8 +573,10 @@ export class SettingsPanel {
         </div>
         <div class="fg">
           <label data-i18n="branchLabel">${t(lang, "branchLabel")}</label>
-          <input id="branch" type="text" list="branchList" value="${branchValue}" placeholder="master" />
-          <datalist id="branchList"></datalist>
+          <div class="branch-wrapper">
+            <input id="branch" type="text" value="${branchValue}" placeholder="master" autocomplete="off" />
+            <div id="branchDropdown" class="branch-dropdown hidden"></div>
+          </div>
           <p class="hint" data-i18n-html="branchHint">${t(lang, "branchHint")}</p>
         </div>
         <div class="inline">
@@ -650,7 +664,33 @@ export class SettingsPanel {
     let currentLang = '${lang}';
     let hasExistingToken = ${tokenMask ? "true" : "false"};
     let selectedInterval = ${initial.intervalMinutes};
+    let branchOptions = [];
     uiLog('script initialized, lang=' + currentLang);
+
+    function renderBranchDropdown(filter) {
+      const dd = $('branchDropdown');
+      dd.innerHTML = '';
+      const opts = filter
+        ? branchOptions.filter((b) => b.toLowerCase().includes(filter.toLowerCase()))
+        : branchOptions;
+      if (opts.length === 0) { dd.classList.add('hidden'); return; }
+      opts.forEach((b) => {
+        const div = document.createElement('div');
+        div.className = 'branch-option';
+        div.textContent = b;
+        div.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          $('branch').value = b;
+          $('branchDropdown').classList.add('hidden');
+        });
+        dd.appendChild(div);
+      });
+      dd.classList.remove('hidden');
+    }
+
+    on('branch', 'input', () => { if (branchOptions.length > 0) renderBranchDropdown($('branch').value); });
+    on('branch', 'focus', () => { if (branchOptions.length > 0) renderBranchDropdown($('branch').value); });
+    on('branch', 'blur', () => { setTimeout(() => $('branchDropdown').classList.add('hidden'), 150); });
 
     window.addEventListener('error', (ev) => { uiError('window error: ' + (ev.message || 'unknown')); });
 
@@ -742,15 +782,9 @@ export class SettingsPanel {
           $('connBadge').textContent = I18N[currentLang]?.connected || 'Connected';
         }
         if (msg.branches && msg.branches.length > 0) {
-          const dl = $('branchList');
-          dl.innerHTML = '';
-          msg.branches.forEach((b) => {
-            const opt = document.createElement('option');
-            opt.value = b;
-            dl.appendChild(opt);
-          });
+          branchOptions = msg.branches;
           const input = $('branch');
-          if (!input.value.trim() || (!msg.branches.includes(input.value) && msg.branches.length > 0)) {
+          if (!input.value.trim() || !msg.branches.includes(input.value)) {
             input.value = msg.branches[0];
           }
           uiLog('branches loaded: ' + msg.branches.join(', '));

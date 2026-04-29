@@ -3,6 +3,7 @@ import path from "node:path";
 import * as vscode from "vscode";
 import { GitHubSyncService } from "./github-sync";
 import { logInfo, logError } from "../utils/logger";
+import { getUserHome } from "../utils/local-path";
 
 export type SkillInstallTarget = "user" | "project" | "remote-user";
 
@@ -40,7 +41,7 @@ export class SkillsInstaller {
   async uninstall(skillName: string, target: SkillInstallTarget): Promise<void> {
     logInfo(`SkillsInstaller.uninstall: "${skillName}" from ${target}`);
     if (target === "user") {
-      const dir = path.join(process.env.HOME ?? "", ".cursor", "skills", skillName);
+      const dir = path.join(getUserHome(), ".cursor", "skills", skillName);
       await fs.rm(dir, { recursive: true, force: true });
     } else if (target === "remote-user") {
       const uri = this.remoteUserSkillUri(skillName);
@@ -53,7 +54,7 @@ export class SkillsInstaller {
 
   async listInstalled(target: SkillInstallTarget): Promise<Set<string>> {
     if (target === "user") {
-      const root = path.join(process.env.HOME ?? "", ".cursor", "skills");
+      const root = path.join(getUserHome(), ".cursor", "skills");
       try {
         const entries = await fs.readdir(root, { withFileTypes: true });
         return new Set(entries.filter(e => e.isDirectory()).map(e => e.name));
@@ -79,7 +80,7 @@ export class SkillsInstaller {
   }
 
   private async installLocal(skillName: string, files: Array<{ relativePath: string; content: string }>): Promise<string> {
-    const skillDir = path.join(process.env.HOME ?? "", ".cursor", "skills", skillName);
+    const skillDir = path.join(getUserHome(), ".cursor", "skills", skillName);
     await fs.mkdir(skillDir, { recursive: true });
     for (const file of files) {
       const abs = path.join(skillDir, file.relativePath);

@@ -27,7 +27,7 @@ export class CollectService {
     const seen = new Set<string>();
 
     if (this.dbReader.available) {
-      const metas = this.dbReader.listAll();
+      const metas = await this.dbReader.listAll();
       logDebug(`CollectService: found ${metas.length} conversations in SQLite`);
       let skippedUp = 0;
       let skippedEmpty = 0;
@@ -37,7 +37,7 @@ export class CollectService {
           skippedUp++;
           continue;
         }
-        const bubbles = this.dbReader.readBubbles(meta.composerId);
+        const bubbles = await this.dbReader.readBubbles(meta.composerId);
         if (bubbles.length === 0) {
           skippedEmpty++;
           continue;

@@ -2,7 +2,7 @@
   "name": "cursor-chronicle-sync",
   "displayName": "Cursor Chronicle Sync",
   "description": "Backup Cursor AI conversations & Skills to GitHub. Markdown export, incremental sync, Skills management and Remote-SSH support. 将 Cursor AI 对话与自定义 Skills 自动备份到 GitHub，支持 Markdown 导出、增量同步、Skills 安装管理和 Remote-SSH 环境。",
-  "version": "0.0.8",
+  "version": "1.0.0",
   "publisher": "purpleroc",
   "repository": {
     "type": "git",
@@ -22,7 +22,10 @@
   },
   "markdown": "github",
   "qna": "marketplace",
-  "extensionKind": ["ui", "workspace"],
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
   "categories": [
     "Machine Learning",
     "SCM Providers",
@@ -175,7 +178,7 @@
         },
         {
           "command": "cursorChronicle.openSettings",
-          "when": "view == cursorChronicle.conversations || view == cursorChronicle.skills",
+          "when": "view == cursorChronicle.conversations || view == cursorChronicle.skills || view == cursorChronicle.welcome",
           "group": "navigation@5"
         },
         {
@@ -230,7 +233,10 @@
         },
         "cursorChronicle.github.defaultVisibility": {
           "type": "string",
-          "enum": ["private", "public"],
+          "enum": [
+            "private",
+            "public"
+          ],
           "default": "private",
           "description": "Visibility for auto-created repo."
         },
@@ -247,7 +253,12 @@
         "cursorChronicle.autoSync.intervalMinutes": {
           "type": "number",
           "default": 10,
-          "enum": [5, 10, 30, 60],
+          "enum": [
+            5,
+            10,
+            30,
+            60
+          ],
           "description": "Auto sync interval in minutes."
         },
         "cursorChronicle.sync.conversations": {
@@ -267,7 +278,9 @@
         },
         "cursorChronicle.ignore.projects": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Project names to skip when scanning."
         },
@@ -278,7 +291,10 @@
         },
         "cursorChronicle.language": {
           "type": "string",
-          "enum": ["zh-CN", "en"],
+          "enum": [
+            "zh-CN",
+            "en"
+          ],
           "default": "zh-CN",
           "description": "UI language for settings page."
         }
@@ -293,7 +309,22 @@
     "clean": "rm -rf dist",
     "release": "npm run typecheck && npm run clean && npm run build:prod && npx @vscode/vsce@2.32.0 package"
   },
-  "keywords": ["cursor", "ai", "chat", "skills management", "skills backup", "github", "sync", "export", "markdown", "skills", "cursor chronicle", "chronicle", "cursor-chronicle", "cursor-chronicle-sync"],
+  "keywords": [
+    "cursor",
+    "ai",
+    "chat",
+    "skills management",
+    "skills backup",
+    "github",
+    "sync",
+    "export",
+    "markdown",
+    "skills",
+    "cursor chronicle",
+    "chronicle",
+    "cursor-chronicle",
+    "cursor-chronicle-sync"
+  ],
   "author": "",
   "license": "MIT",
   "type": "commonjs",
@@ -304,6 +335,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@octokit/rest": "^22.0.1"
+    "@octokit/rest": "^22.0.1",
+    "sql.js": "^1.14.1"
   }
 }

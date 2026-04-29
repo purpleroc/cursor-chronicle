@@ -11,6 +11,7 @@ import type { ComposerMeta } from "./composer-db-reader";
 const execFileAsync = promisify(execFileCb);
 
 const FRONTMATTER_KEYS = {
+  version: "chronicleVersion",
   composerId: "chronicleComposerId",
   lastUpdatedAt: "chronicleLastUpdatedAt",
   workspaceUri: "chronicleWorkspaceUri",
@@ -19,6 +20,9 @@ const FRONTMATTER_KEYS = {
   hostname: "chronicleHostname",
 } as const;
 
+/** Current frontmatter schema version. Bump when adding/changing fields. */
+const FRONTMATTER_VERSION = 2;
+
 export type ConversationSource = "local" | "remote";
 
 function getHostname(): string {
@@ -26,12 +30,13 @@ function getHostname(): string {
 }
 
 export interface ChronicleFrontmatter {
+  version?: number;
   composerId: string;
   lastUpdatedAt: number;
   workspaceUri?: string;
   workspacePath?: string;
-  source?: ConversationSource;
-  hostname?: string;
+  source: ConversationSource;
+  hostname: string;
 }
 
 export interface LocalConversationEntry {
@@ -89,6 +94,14 @@ export class LocalStore {
       await fs.writeFile(gitignore, requiredEntries.join("\n") + "\n", "utf8");
     }
 
+    // Force LF in the sync repo to avoid Windows \r\n issues in frontmatter parsing
+    const gitattributes = path.join(this.getSyncDir(), ".gitattributes");
+    try {
+      await fs.access(gitattributes);
+    } catch {
+      await fs.writeFile(gitattributes, "* text=auto eol=lf\n", "utf8");
+    }
+
     try {
       await fs.readFile(this.indexPath(), "utf8");
     } catch {
@@ -144,6 +157,7 @@ export class LocalStore {
 
     const fm = [
       "---",
+      `${FRONTMATTER_KEYS.version}: ${FRONTMATTER_VERSION}`,
       `${FRONTMATTER_KEYS.composerId}: ${meta.composerId}`,
       `${FRONTMATTER_KEYS.lastUpdatedAt}: ${meta.lastUpdatedAt}`,
       meta.workspaceUri
@@ -152,7 +166,7 @@ export class LocalStore {
       meta.workspacePath
         ? `${FRONTMATTER_KEYS.workspacePath}: ${JSON.stringify(meta.workspacePath)}`
         : "",
-      source ? `${FRONTMATTER_KEYS.source}: ${source}` : "",
+      `${FRONTMATTER_KEYS.source}: ${source || "local"}`,
       `${FRONTMATTER_KEYS.hostname}: ${getHostname()}`,
       "---",
       "",
@@ -271,6 +285,7 @@ export class LocalStore {
       lastUpdatedAt = Date.now();
       const fm = [
         "---",
+        `${FRONTMATTER_KEYS.version}: ${FRONTMATTER_VERSION}`,
         `${FRONTMATTER_KEYS.composerId}: ${composerId}`,
         `${FRONTMATTER_KEYS.lastUpdatedAt}: ${lastUpdatedAt}`,
         `${FRONTMATTER_KEYS.source}: local`,
@@ -317,7 +332,18 @@ export class LocalStore {
     await fs.writeFile(outPath, jsonContent, "utf8");
   }
 
+  private async assertGitAvailable(): Promise<void> {
+    try {
+      await execFileAsync("git", ["--version"], { timeout: 5_000 });
+    } catch {
+      throw new Error(
+        "未检测到 git 命令。请先安装 Git（Windows 推荐 https://git-scm.com/download/win），安装后重启 Cursor。"
+      );
+    }
+  }
+
   async gitConfigureRemote(token: string, owner: string, repo: string, branch: string = "master"): Promise<void> {
+    await this.assertGitAvailable();
     const cwd = this.getSyncDir();
     await fs.mkdir(cwd, { recursive: true });
     const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
@@ -330,6 +356,10 @@ export class LocalStore {
       const cloned = await this.tryCloneInto(url, resolvedBranch, cwd);
       if (!cloned) {
         await execFileAsync("git", ["init"], { cwd, timeout: 10_000 });
+        try {
+          await execFileAsync("git", ["config", "core.longpaths", "true"], { cwd, timeout: 5_000 });
+          await execFileAsync("git", ["config", "core.autocrlf", "false"], { cwd, timeout: 5_000 });
+        } catch { /* best effort */ }
         try {
           await execFileAsync("git", ["branch", "-M", resolvedBranch], { cwd, timeout: 5_000 });
         } catch {
@@ -378,7 +408,11 @@ export class LocalStore {
   private async tryCloneInto(url: string, branch: string, targetDir: string): Promise<boolean> {
     const tmpDir = targetDir + "__clone_tmp_" + Date.now();
     try {
-      await execFileAsync("git", ["clone", "--branch", branch, "--single-branch", url, tmpDir], { timeout: 120_000 });
+      await execFileAsync(
+        "git",
+        ["clone", "--config", "core.longpaths=true", "--config", "core.autocrlf=false", "--branch", branch, "--single-branch", url, tmpDir],
+        { timeout: 120_000 }
+      );
 
       await this.mergeTreeNoOverwrite(tmpDir, targetDir);
 
@@ -475,6 +509,70 @@ export class LocalStore {
     logInfo(`LocalStore.ensureRemoteBranch: remote branch "${branch}" created`);
   }
 
+  async gitPull(branch?: string): Promise<void> {
+    const cwd = this.getSyncDir();
+    const hasGit = await fs.access(path.join(cwd, ".git")).then(() => true, () => false);
+    if (!hasGit) {
+      logDebug("LocalStore.gitPull: no .git directory, skipping");
+      return;
+    }
+    const targetBranch = branch || await this.gitCurrentBranch().catch(() => "");
+    if (!targetBranch) return;
+
+    const doPull = () => execFileAsync(
+      "git",
+      ["pull", "--no-edit", "--allow-unrelated-histories", "origin", targetBranch],
+      { cwd, timeout: 60_000 }
+    );
+
+    try {
+      await doPull();
+      logInfo(`LocalStore.gitPull: pulled successfully (branch=${targetBranch})`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+
+      // On Windows (and occasionally other platforms), untracked local files created during
+      // init (e.g. .gitignore) can conflict with remote files. Remove them and retry.
+      if (msg.includes("untracked working tree files would be overwritten by merge")) {
+        const conflicting = this.parseUntrackedConflicts(msg);
+        if (conflicting.length > 0) {
+          logDebug(`LocalStore.gitPull: removing ${conflicting.length} conflicting untracked file(s) and retrying`);
+          for (const f of conflicting) {
+            await fs.unlink(path.join(cwd, f)).catch(() => {});
+          }
+          try {
+            await doPull();
+            logInfo(`LocalStore.gitPull: pulled successfully after removing conflicting files (branch=${targetBranch})`);
+            return;
+          } catch (retryErr) {
+            logDebug(`LocalStore.gitPull: retry also failed (non-fatal): ${retryErr instanceof Error ? retryErr.message : retryErr}`);
+            return;
+          }
+        }
+      }
+
+      logDebug(`LocalStore.gitPull: skipped (non-fatal — empty/new repo or offline): ${msg}`);
+    }
+  }
+
+  private parseUntrackedConflicts(errorMessage: string): string[] {
+    const files: string[] = [];
+    const lines = errorMessage.split(/\r?\n/);
+    let collecting = false;
+    for (const line of lines) {
+      if (line.includes("would be overwritten by merge")) {
+        collecting = true;
+        continue;
+      }
+      if (collecting) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("Please") || trimmed.startsWith("Aborting")) break;
+        files.push(trimmed);
+      }
+    }
+    return files;
+  }
+
   async gitAddAndCommit(message: string): Promise<{ committed: boolean; filesChanged: number }> {
     const cwd = this.getSyncDir();
     await execFileAsync("git", ["add", "-A"], { cwd, timeout: 30_000 });
@@ -555,10 +653,13 @@ export class LocalStore {
 }
 
 export function parseFrontmatter(raw: string): ChronicleFrontmatter | null {
-  if (!raw.startsWith("---\n")) return null;
-  const end = raw.indexOf("\n---\n", 4);
+  // Normalize \r\n → \n so frontmatter parsing works on Windows
+  // (git may convert line endings via core.autocrlf)
+  const text = raw.replace(/\r\n/g, "\n");
+  if (!text.startsWith("---\n")) return null;
+  const end = text.indexOf("\n---\n", 4);
   if (end === -1) return null;
-  const block = raw.slice(4, end);
+  const block = text.slice(4, end);
   const lines = block.split("\n");
   const map: Record<string, string> = {};
   for (const line of lines) {
@@ -591,10 +692,15 @@ export function parseFrontmatter(raw: string): ChronicleFrontmatter | null {
     }
   }
 
+  const versionRaw = map[FRONTMATTER_KEYS.version];
+  const version = versionRaw ? Number(versionRaw) : undefined;
+
   const sourceRaw = map[FRONTMATTER_KEYS.source];
-  const source = sourceRaw === "local" || sourceRaw === "remote" ? sourceRaw : undefined;
+  // v1 (no version field): source may be missing → default to "local"
+  const source: ConversationSource = sourceRaw === "remote" ? "remote" : "local";
 
-  const hostname = map[FRONTMATTER_KEYS.hostname];
+  // v1: hostname may be missing → keep as empty string (classified as "unknown origin")
+  const hostname = map[FRONTMATTER_KEYS.hostname] || "";
 
-  return { composerId: id, lastUpdatedAt, workspaceUri, workspacePath, source, hostname };
+  return { version, composerId: id, lastUpdatedAt, workspaceUri, workspacePath, source, hostname };
 }

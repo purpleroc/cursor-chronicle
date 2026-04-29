@@ -24,6 +24,7 @@ import { SkillRecord, RemoteSkillMeta } from "./models";
 import { acquireSyncLock, releaseSyncLock } from "./services/sync-lock";
 import { detectRemoteHome, isRemoteSession, getRemoteHost } from "./utils/remote-home";
 import { initLogger, logInfo, logWarn, logError, logDebug } from "./utils/logger";
+import { getUserHome } from "./utils/local-path";
 
 const TOKEN_KEY = "cursorChronicle.githubToken";
 
@@ -116,7 +117,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   const convTree = new ConversationsTreeProvider(localStore, syncState);
-  const skillsTree = new SkillsTreeProvider(skillsCollector, syncState, listRemoteSkills);
+  const skillsTree = new SkillsTreeProvider(skillsCollector, syncState, localStore, listRemoteSkills);
 
   context.subscriptions.push(
     vscode.window.createTreeView("cursorChronicle.conversations", { treeDataProvider: convTree }),
@@ -153,7 +154,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logInfo("runCollectAndSync: acquiring lock...");
     const locked = await acquireSyncLock();
     if (!locked) {
-      logWarn("runCollectAndSync: lock already held, skipping");
+      logWarn("runCollectAndSync: lock already held by another instance, skipping sync");
+      // 树视图读取本地目录，无需锁，多个 IDE 均可刷新
+      convTree.refresh();
+      skillsTree.refresh();
       return;
     }
     updateStatusBar("syncing");
@@ -161,23 +165,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     dbReader.invalidateCache();
     let ok = false;
     try {
+      const token = await context.secrets.get(TOKEN_KEY);
+      const settings = readSettings();
+      const github = token && settings.repository ? new GitHubSyncService(token) : null;
+      const repoRef = github ? github.parseRepo(settings.repository) : null;
+
+      // Step 1: 从 GitHub pull 最新数据（首次则 clone）
+      if (github && repoRef && token) {
+        if (!repoVerified) {
+          await github.ensureRepository(repoRef, settings.createRepoIfMissing, settings.visibility);
+          repoVerified = true;
+        }
+        await github.assertRepositoryWritable(repoRef);
+        await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo, settings.branch);
+        await localStore.gitPull(settings.branch);
+        logInfo("runCollectAndSync: GitHub pull completed");
+      }
+
+      // Step 2: 从本机收集对话和技能，写入本地同步目录
       const r = await collectService.collectAll();
       logInfo(`runCollectAndSync: collected ${r.conversationsWritten} conversations, ${r.skillsMirrored} skills`);
-      const token = await context.secrets.get(TOKEN_KEY);
-      const repository = vscode.workspace
-        .getConfiguration("cursorChronicle")
-        .get<string>("github.repository", "");
-      if (token && repository) {
-        await executeGitHubSync(context, localStore, skillsCollector, syncState, convTree, skillsTree);
-        logInfo("runCollectAndSync: GitHub sync completed");
-        void vscode.window.showInformationMessage(
-          `Chronicle: 已收集 ${r.conversationsWritten} 个对话、${r.skillsMirrored} 个技能，并已同步 GitHub。`
-        );
+
+      // Step 3: 刷新树视图（纯读本地目录，pull + collect 都已完成）
+      convTree.refresh();
+      skillsTree.refresh();
+
+      // Step 4: 检测变动并推送到 GitHub
+      if (github && repoRef && token) {
+        if (settings.syncSkills) {
+          await prepareSkillsForPublish(localStore, skillsCollector, github);
+        }
+        const { committed, filesChanged } = await localStore.gitAddAndCommit("chore: sync conversations and skills");
+        if (committed) {
+          logInfo(`runCollectAndSync: committed ${filesChanged} files, pushing...`);
+          await localStore.gitPush(settings.branch);
+          await markAllAsSynced(localStore, skillsCollector, syncState, github);
+          void vscode.window.showInformationMessage(
+            `Chronicle: 已同步 ${filesChanged} 个文件到 GitHub（对话 ${r.conversationsWritten} 个）。`
+          );
+        } else {
+          logInfo("runCollectAndSync: no file changes in sync dir, skipping push");
+        }
       } else {
         logInfo("runCollectAndSync: no GitHub config, skip remote sync");
-        void vscode.window.showInformationMessage(
-          `Chronicle: 已收集 ${r.conversationsWritten} 个对话、${r.skillsMirrored} 个技能。配置 GitHub 后可同步到仓库。`
-        );
+        if (r.conversationsWritten > 0) {
+          void vscode.window.showInformationMessage(
+            `Chronicle: 已收集 ${r.conversationsWritten} 个对话，配置 GitHub 后可同步到仓库。`
+          );
+        }
       }
       ok = true;
     } catch (e) {
@@ -366,7 +401,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       try {
         const remoteHome = await detectRemoteHome();
-        const cursorHome = remoteHome?.fsPath ?? (process.env.HOME ?? process.env.USERPROFILE ?? "");
+        const cursorHome = remoteHome?.fsPath ?? getUserHome();
         const skillDir = path.join(cursorHome, ".cursor", "skills", skillName);
         await fs.mkdir(skillDir, { recursive: true });
 
@@ -450,18 +485,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
 
-  void collectService
-    .collectAll()
-    .then(() => {
-      convTree.refresh();
-      skillsTree.refresh();
-      logInfo("Initial collection completed");
-    })
-    .catch((e) => {
-      logError("Initial collection failed (non-fatal)", e);
-    });
-
+  // 初始化时走完整的 collect+sync 流程（含锁），多 IDE 并发时只有一个实例实际执行
   restartAutoSync(runCollectAndSync);
+  void runCollectAndSync();
   logInfo("Cursor Chronicle activated");
 }
 
@@ -551,53 +577,6 @@ function restartAutoSync(runCollectAndSync: () => Promise<void>): void {
       }
     },
   };
-}
-
-async function executeGitHubSync(
-  context: vscode.ExtensionContext,
-  localStore: LocalStore,
-  skillsCollector: SkillsCollector,
-  syncState: SyncStateService,
-  convTree: ConversationsTreeProvider,
-  skillsTree: SkillsTreeProvider
-): Promise<void> {
-  logInfo("executeGitHubSync: starting");
-  const settings = readSettings();
-  const token = await context.secrets.get(TOKEN_KEY);
-  if (!token) {
-    void vscode.window.showErrorMessage("请先配置 GitHub Token。");
-    return;
-  }
-  if (!settings.repository) {
-    void vscode.window.showErrorMessage("请先配置 GitHub 仓库。");
-    return;
-  }
-
-  const github = new GitHubSyncService(token);
-  const repoRef = github.parseRepo(settings.repository);
-
-  if (!repoVerified) {
-    await github.ensureRepository(repoRef, settings.createRepoIfMissing, settings.visibility);
-    repoVerified = true;
-  }
-  await github.assertRepositoryWritable(repoRef);
-
-  if (settings.syncSkills) {
-    await prepareSkillsForPublish(localStore, skillsCollector, github);
-  }
-
-  await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo, settings.branch);
-  const { committed, filesChanged } = await localStore.gitAddAndCommit("chore: sync conversations and skills");
-
-  if (committed) {
-    logInfo(`executeGitHubSync: committed ${filesChanged} files`);
-  }
-  await localStore.gitPush(settings.branch);
-
-  await markAllAsSynced(localStore, skillsCollector, syncState, github);
-  convTree.refresh();
-  skillsTree.refresh();
-  logInfo("executeGitHubSync: completed");
 }
 
 function md5(content: string): string {

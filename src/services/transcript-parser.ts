@@ -63,7 +63,7 @@ export class TranscriptParser {
     }
     const allTurns = [...mainTurns, ...subagentTurns];
 
-    const cursorTitle = getCursorTitle(scanResult.sessionId);
+    const cursorTitle = await getCursorTitle(scanResult.sessionId);
     const title = cursorTitle ?? this.extractTitleFromContent(allTurns);
 
     return {

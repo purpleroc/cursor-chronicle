@@ -94,6 +94,19 @@ function isCurrentWorkspaceEntry(
   return false;
 }
 
+function isRemoteDevEntry(entry: LocalConversationEntry): boolean {
+  if (entry.frontmatter.source === "remote") return true;
+  if (entry.frontmatter.workspaceUri) {
+    try {
+      const scheme = new URL(entry.frontmatter.workspaceUri).protocol.replace(/:$/, "");
+      if (scheme && scheme !== "file") return true;
+    } catch {
+      if (!entry.frontmatter.workspaceUri.startsWith("file:")) return true;
+    }
+  }
+  return false;
+}
+
 function buildProjectNodes(
   grouped: Map<string, ConversationNode[]>,
   folders: readonly vscode.WorkspaceFolder[]
@@ -140,45 +153,50 @@ export class ConversationsTreeProvider implements vscode.TreeDataProvider<TreeIt
     }
 
     const currentHostname = os.hostname();
-    const hostGroups = new Map<string, Map<string, ConversationNode[]>>();
+    const localMap = new Map<string, ConversationNode[]>();
+    const remoteDevMap = new Map<string, ConversationNode[]>();
+    const repoMap = new Map<string, ConversationNode[]>();
 
     for (const entry of entries) {
       const synced = Boolean(state.conversations?.[entry.frontmatter.composerId]);
-      const node = new ConversationNode(entry, synced);
-      const host = entry.frontmatter.hostname || "__repo__";
-      if (!hostGroups.has(host)) hostGroups.set(host, new Map());
-      const projectMap = hostGroups.get(host)!;
-      const arr = projectMap.get(entry.projectName) ?? [];
-      arr.push(node);
-      projectMap.set(entry.projectName, arr);
+
+      // Git 仓库: all entries unconditionally
+      const repoNode = new ConversationNode(entry, synced);
+      const repoArr = repoMap.get(entry.projectName) ?? [];
+      repoArr.push(repoNode);
+      repoMap.set(entry.projectName, repoArr);
+
+      // 本机 / 远程开发: only entries that have a hostname matching this machine.
+      // Entries without hostname (v1 legacy data) are only shown in Git 仓库.
+      if (entry.frontmatter.hostname && entry.frontmatter.hostname === currentHostname) {
+        const node = new ConversationNode(entry, synced);
+        if (isRemoteDevEntry(entry)) {
+          const arr = remoteDevMap.get(entry.projectName) ?? [];
+          arr.push(node);
+          remoteDevMap.set(entry.projectName, arr);
+        } else {
+          const arr = localMap.get(entry.projectName) ?? [];
+          arr.push(node);
+          localMap.set(entry.projectName, arr);
+        }
+      }
     }
 
     const root: TreeItem[] = [];
 
-    // Current host first (expanded), other hosts after (collapsed)
-    const sortedHosts = [...hostGroups.keys()].sort((a, b) => {
-      if (a === currentHostname) return -1;
-      if (b === currentHostname) return 1;
-      return a.localeCompare(b);
-    });
+    if (localMap.size > 0) {
+      const projects = buildProjectNodes(localMap, folders);
+      root.push(new LocationNode(`本机 (${currentHostname})`, "vm", projects, false));
+    }
 
-    for (const host of sortedHosts) {
-      const projectMap = hostGroups.get(host)!;
-      const projects = buildProjectNodes(projectMap, folders);
-      const isCurrentHost = host === currentHostname;
-      let icon: string;
-      let label: string;
-      if (isCurrentHost) {
-        icon = "vm";
-        label = `${host} (本机)`;
-      } else if (host === "__repo__") {
-        icon = "repo";
-        label = getRepoLabel();
-      } else {
-        icon = "remote-explorer";
-        label = host;
-      }
-      root.push(new LocationNode(label, icon, projects, !isCurrentHost));
+    if (remoteDevMap.size > 0) {
+      const projects = buildProjectNodes(remoteDevMap, folders);
+      root.push(new LocationNode("远程开发", "remote-explorer", projects, true));
+    }
+
+    if (repoMap.size > 0) {
+      const projects = buildProjectNodes(repoMap, folders);
+      root.push(new LocationNode(`Git 仓库 (${getRepoLabel()})`, "repo", projects, true));
     }
 
     if (root.length === 0) {

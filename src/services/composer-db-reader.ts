@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { getUserHome } from "../utils/local-path";
+import { SqliteReader, isSqlJsAvailable } from "./sqlite-reader";
+import { logDebug } from "../utils/logger";
 
-const home = process.env.HOME ?? "";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TITLE_FROM_USER_MAX = 40;
 
@@ -24,77 +25,57 @@ export interface ComposerBubble {
 }
 
 function resolveDbPath(): string | null {
-  const candidates =
-    process.platform === "darwin"
-      ? [path.join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")]
-      : [path.join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb")];
+  const home = getUserHome();
+  let candidates: string[];
+  if (process.platform === "darwin") {
+    candidates = [
+      path.join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb"),
+    ];
+  } else if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+    const localAppData = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+    candidates = [
+      path.join(appData, "Cursor", "User", "globalStorage", "state.vscdb"),
+      path.join(localAppData, "cursor", "User", "globalStorage", "state.vscdb"),
+      path.join(localAppData, "Cursor", "User", "globalStorage", "state.vscdb"),
+    ];
+  } else {
+    candidates = [
+      path.join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb"),
+    ];
+  }
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
   return null;
 }
 
-let sqlite3Ok: boolean | undefined;
-function hasSqlite3(): boolean {
-  if (sqlite3Ok !== undefined) return sqlite3Ok;
-  try {
-    execFileSync("sqlite3", ["--version"], { encoding: "utf8", timeout: 2000, stdio: "pipe" });
-    sqlite3Ok = true;
-  } catch {
-    sqlite3Ok = false;
-  }
-  return sqlite3Ok;
-}
-
-function querySingle(db: string, sql: string): string | null {
-  try {
-    const raw = execFileSync("sqlite3", [db, sql], {
-      encoding: "utf8",
-      timeout: 15000,
-      stdio: "pipe",
-      maxBuffer: 50 * 1024 * 1024,
-    }).trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
-}
-
-function queryJsonRows(db: string, sql: string): Record<string, string>[] {
-  try {
-    const raw = execFileSync("sqlite3", ["-json", db, sql], {
-      encoding: "utf8",
-      timeout: 30000,
-      stdio: "pipe",
-      maxBuffer: 100 * 1024 * 1024,
-    }).trim();
-    if (!raw) return [];
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
-}
-
 export class ComposerDbReader {
-  private readonly dbPath: string | null;
   private metaCache: ComposerMeta[] | null = null;
 
-  constructor() {
-    this.dbPath = hasSqlite3() ? resolveDbPath() : null;
-  }
-
   get available(): boolean {
-    return this.dbPath !== null;
+    return isSqlJsAvailable() && resolveDbPath() !== null;
   }
 
-  listAll(): ComposerMeta[] {
-    if (this.metaCache) return this.metaCache;
-    if (!this.dbPath) return [];
+  /** Call before the next sync cycle to force a fresh DB read. */
+  invalidateCache(): void {
+    this.metaCache = null;
+  }
 
+  async listAll(): Promise<ComposerMeta[]> {
+    if (this.metaCache) return this.metaCache;
+
+    const dbPath = resolveDbPath();
+    if (!dbPath) {
+      logDebug("ComposerDbReader.listAll: state.vscdb not found");
+      return [];
+    }
+
+    const reader = new SqliteReader(dbPath);
     try {
-      const raw = querySingle(
-        this.dbPath,
-        "SELECT value FROM ItemTable WHERE key='composer.composerHeaders';"
+      const raw = await reader.querySingle(
+        "SELECT value FROM ItemTable WHERE key=?",
+        ["composer.composerHeaders"]
       );
       if (!raw) return [];
 
@@ -108,7 +89,7 @@ export class ComposerDbReader {
         const ws = h.workspaceIdentifier?.uri;
         let name = typeof h.name === "string" && h.name.trim() ? h.name.trim() : "";
         if (!name || name.toLowerCase() === "untitled") {
-          const bubbles = this.readBubbles(h.composerId);
+          const bubbles = await this.readBubblesViaReader(reader, h.composerId);
           const firstUser = bubbles.find((b) => b.type === 1 && b.text?.trim());
           if (!firstUser) continue;
           name = firstUser.text.replace(/\s+/g, " ").trim().slice(0, TITLE_FROM_USER_MAX);
@@ -131,23 +112,42 @@ export class ComposerDbReader {
       return results;
     } catch {
       return [];
+    } finally {
+      reader.close();
     }
   }
 
-  readBubbles(composerId: string): ComposerBubble[] {
-    if (!this.dbPath || !UUID_RE.test(composerId)) return [];
+  async readBubbles(composerId: string): Promise<ComposerBubble[]> {
+    if (!UUID_RE.test(composerId)) return [];
+    const dbPath = resolveDbPath();
+    if (!dbPath) return [];
+
+    const reader = new SqliteReader(dbPath);
+    try {
+      return await this.readBubblesViaReader(reader, composerId);
+    } finally {
+      reader.close();
+    }
+  }
+
+  /**
+   * Reads bubbles using an already-open reader (avoids reopening the DB
+   * when called from listAll which already holds a reader).
+   */
+  private async readBubblesViaReader(reader: SqliteReader, composerId: string): Promise<ComposerBubble[]> {
+    if (!UUID_RE.test(composerId)) return [];
 
     try {
-      const raw = querySingle(
-        this.dbPath,
-        `SELECT value FROM cursorDiskKV WHERE key='composerData:${composerId}';`
+      const raw = await reader.querySingle(
+        "SELECT value FROM cursorDiskKV WHERE key=?",
+        [`composerData:${composerId}`]
       );
       if (!raw) return [];
 
       const data = JSON.parse(raw);
 
       if (data._v && data._v >= 9) {
-        return this.readV9(composerId, data);
+        return this.readV9ViaReader(reader, composerId, data);
       }
       return this.readLegacy(data);
     } catch {
@@ -155,20 +155,20 @@ export class ComposerDbReader {
     }
   }
 
-  private readV9(composerId: string, data: any): ComposerBubble[] {
+  private async readV9ViaReader(reader: SqliteReader, composerId: string, data: any): Promise<ComposerBubble[]> {
     const headers: any[] = data.fullConversationHeadersOnly ?? [];
     if (headers.length === 0) return [];
 
     const bubbleIds = headers.map((h: any) => h.bubbleId).filter(Boolean);
     if (bubbleIds.length === 0) return [];
 
+    // bubbleIds and composerId are UUID-validated, so string interpolation is safe here.
     const inClause = bubbleIds
       .map((id: string) => `'bubbleId:${composerId}:${id}'`)
       .join(",");
 
-    const rows = queryJsonRows(
-      this.dbPath!,
-      `SELECT key, value FROM cursorDiskKV WHERE key IN (${inClause});`
+    const rows = await reader.queryRows(
+      `SELECT key, value FROM cursorDiskKV WHERE key IN (${inClause})`
     );
 
     const byId = new Map<string, any>();
@@ -202,9 +202,5 @@ export class ComposerDbReader {
         type: msg.type ?? (msg.role === "user" ? 1 : 2),
         text: msg.text ?? "",
       }));
-  }
-
-  invalidateCache(): void {
-    this.metaCache = null;
   }
 }

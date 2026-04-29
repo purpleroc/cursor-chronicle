@@ -2,12 +2,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import * as vscode from "vscode";
 import { SkillRecord } from "../models";
+import { getUserHome } from "../utils/local-path";
 
 export class SkillsCollector {
   async collect(remoteHomeUri?: vscode.Uri): Promise<SkillRecord[]> {
     const records: SkillRecord[] = [];
-    const home = process.env.HOME ?? "";
-    const userSkillsDir = path.join(home, ".cursor", "skills");
+    const userSkillsDir = path.join(getUserHome(), ".cursor", "skills");
 
     records.push(...(await this.collectLocal(userSkillsDir, "user")));
 
@@ -67,7 +67,7 @@ export class SkillsCollector {
       if (entry.isDirectory()) {
         files.push(...(await this.listLocalFiles(baseDir, abs)));
       } else if (entry.isFile()) {
-        files.push(path.relative(baseDir, abs));
+        files.push(path.relative(baseDir, abs).split(path.sep).join("/"));
       }
     }
     return files.sort();

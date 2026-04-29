@@ -3,6 +3,7 @@ import path from "node:path";
 import { SkillRecord, RemoteSkillMeta } from "../models";
 import { SkillsCollector } from "../services/skills-collector";
 import { SyncStateService } from "../services/sync-state";
+import { LocalStore } from "../services/local-store";
 import { detectRemoteHome } from "../utils/remote-home";
 
 type TreeItem = SkillCategoryNode | SkillNode | RemoteSkillNode | EmptyNode;
@@ -36,9 +37,13 @@ export class SkillNode extends vscode.TreeItem {
       synced ? "cloud" : "circle-outline",
       synced ? new vscode.ThemeColor("charts.green") : undefined
     );
-    const skillMd = skill.absolutePath.startsWith("/")
-      ? vscode.Uri.file(path.join(skill.absolutePath, "SKILL.md"))
-      : vscode.Uri.parse(skill.absolutePath + "/SKILL.md");
+    // absolutePath is either a raw filesystem path (local skills) or a serialized URI string
+    // (project/remote skills collected via vscode.workspace.fs). Use Uri.file() for filesystem
+    // paths so that Windows drive-letter paths (C:\...) are handled correctly.
+    const skillMd =
+      skill.absolutePath.startsWith("vscode-") || skill.absolutePath.startsWith("file:")
+        ? vscode.Uri.joinPath(vscode.Uri.parse(skill.absolutePath), "SKILL.md")
+        : vscode.Uri.file(path.join(skill.absolutePath, "SKILL.md"));
     this.command = {
       command: "vscode.open",
       title: "Open SKILL.md",
@@ -48,16 +53,17 @@ export class SkillNode extends vscode.TreeItem {
 }
 
 export class RemoteSkillNode extends vscode.TreeItem {
-  constructor(public readonly remote: RemoteSkillMeta) {
+  constructor(public readonly remote: RemoteSkillMeta, syncDir: string) {
     super(remote.name, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "remoteSkill";
     this.description = (remote.description || "").replace(/\s+/g, " ").trim().slice(0, 48);
-    this.tooltip = `${remote.name}\n${remote.description || ""}\n点击安装到本地`;
+    this.tooltip = `${remote.name}\n${remote.description || ""}\n右键安装到本地`;
     this.iconPath = new vscode.ThemeIcon("cloud-download");
+    const skillMdPath = path.join(syncDir, "skills", remote.name, "SKILL.md");
     this.command = {
-      command: "cursorChronicle.chooseInstallRemoteSkill",
-      title: "Install",
-      arguments: [remote],
+      command: "vscode.open",
+      title: "Open SKILL.md",
+      arguments: [vscode.Uri.file(skillMdPath)],
     };
   }
 }
@@ -69,6 +75,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   constructor(
     private readonly collector: SkillsCollector,
     private readonly syncState: SyncStateService,
+    private readonly localStore: LocalStore,
     private readonly listRemoteSkills: () => Promise<RemoteSkillMeta[]>
   ) {}
 
@@ -116,8 +123,9 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
       remote = [];
     }
     if (remote.length > 0) {
+      const syncDir = this.localStore.getSyncDir();
       categories.push(
-        new SkillCategoryNode("GitHub 仓库 (可安装)", remote.map((r) => new RemoteSkillNode(r)))
+        new SkillCategoryNode("GitHub 仓库 (可安装)", remote.map((r) => new RemoteSkillNode(r, syncDir)))
       );
     }
 
