@@ -1,14 +1,44 @@
 # Cursor Chronicle
 
-[English](#english) | [中文](#中文)
+[English](#english) | [中文](#中文) · [Marketplace](https://marketplace.visualstudio.com/items?itemName=purpleroc.cursor-chronicle-sync)
+
+Backup Cursor AI conversations & Skills to GitHub — Markdown export, incremental sync, Skills install, and Remote-SSH.
+
+将 Cursor AI 对话与 Skills 自动备份到 GitHub，支持 Markdown 导出、增量同步、Skills 安装和 Remote-SSH。
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-1.png"><img src="https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-1.png" width="240" alt="Conversations sidebar" /></a><br/>
+      <sub>Conversations</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-2.png"><img src="https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-2.png" width="240" alt="Settings" /></a><br/>
+      <sub>Settings</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-3.png"><img src="https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-3.png" width="240" alt="Skills manager" /></a><br/>
+      <sub>Skills</sub>
+    </td>
+  </tr>
+</table>
+
+## Quick Start · 快速开始
+
+1. **Install** — 在 Cursor / VS Code 扩展市场搜索 `Cursor Chronicle Sync`，或用下方命令打包后 **Install from VSIX**。
+2. **Configure** — 侧边栏 Cursor Chronicle → **Configure GitHub**：填入 Token（Classic 需 `repo`；Fine-grained 需 Contents: Read and Write）、`owner/repo`、分支（默认 `master`）后保存。
+3. **Sync** — 命令面板运行 `Chronicle: Collect + Sync GitHub`。
+
+```bash
+npm install
+npm run release
+```
 
 ---
 
 <a id="english"></a>
 
 ## English
-
-> Backup Cursor AI conversations & Skills to GitHub — with Markdown export, branch control, Skills management, and Remote-SSH support.
 
 ### Features
 
@@ -21,8 +51,6 @@
 - **Import from MD** — import external Markdown files as conversations via the sidebar toolbar
 - **Single & batch export** — right-click to export one, or export all at once
 
-![chronicle](https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-1.png)
-
 #### Skills Management
 
 - **Local mirror** — mirrors `~/.cursor/skills/` and workspace `.cursor/skills/` automatically
@@ -31,8 +59,6 @@
 - **Import from MD** — import a Markdown file as a new Skill via the sidebar toolbar
 - **Management panel** — card-based UI with search, install/uninstall, and status badges
 - **Multiple targets** — install to user-level (`~/.cursor/skills/`) or project-level (`.cursor/skills/`)
-
-![skills](https://raw.githubusercontent.com/purpleroc/cursor-chronicle/main/pic/cursor-chronicle-2.png)
 
 #### GitHub Sync
 
@@ -53,29 +79,7 @@
 
 - **Chinese / English** toggle in the settings page — switch UI language with one click
 
-### Quick Start
-
-#### 1. Install
-
-```bash
-npm install
-npm run release
-```
-
-This runs type-check, clean, production build, and packages into a `.vsix` file. Install via **Extensions > Install from VSIX** in Cursor / VS Code.
-
-#### 2. Configure GitHub
-
-1. Click the **Cursor Chronicle** icon in the Activity Bar
-2. Click **Configure GitHub** to open the settings panel
-3. Enter your GitHub Personal Access Token
-   - Classic Token: needs `repo` scope
-   - Fine-grained Token: needs `Contents: Read and Write`
-4. Set the target repository (`owner/repo`)
-5. Choose the sync branch (defaults to `master`)
-6. Save settings
-
-#### 3. Commands
+### Commands
 
 | Command | Description |
 |---------|-------------|
@@ -137,8 +141,6 @@ Open the Output panel (`View > Output`), select **Cursor Chronicle** from the dr
 
 ## 中文
 
-> 将 Cursor AI 对话与 Skills 自动备份到 GitHub，支持 Markdown 导出、分支选择、Skills 安装管理和 Remote-SSH 环境。
-
 ### 功能特性
 
 #### 对话收集与导出
@@ -178,31 +180,7 @@ Open the Output panel (`View > Output`), select **Cursor Chronicle** from the dr
 
 - 设置页面支持 **中文/英文** 一键切换
 
-### 快速开始
-
-#### 1. 安装
-
-```bash
-npm install
-npm run release
-```
-
-`release` 会依次执行 类型检查 → 清理 → 生产构建 → 打包 VSIX。完成后在项目根目录生成 `cursor-chronicle-x.x.x.vsix`。
-
-在 Cursor / VS Code 中通过 **Extensions → Install from VSIX** 安装。
-
-#### 2. 配置 GitHub
-
-1. 点击侧边栏中的 **Cursor Chronicle** 图标
-2. 点击 **Configure GitHub** 打开设置页面
-3. 输入 GitHub Personal Access Token
-   - Classic Token 需要 `repo` scope
-   - Fine-grained Token 需要 `Contents: Read and Write` 权限
-4. 填写目标仓库（`owner/repo` 格式）
-5. 选择同步分支（默认 `master`）
-6. 保存设置
-
-#### 3. 常用命令
+### 常用命令
 
 | 命令 | 说明 |
 |------|------|
