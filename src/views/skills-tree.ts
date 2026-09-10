@@ -57,7 +57,8 @@ export class RemoteSkillNode extends vscode.TreeItem {
     super(remote.name, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "remoteSkill";
     this.description = (remote.description || "").replace(/\s+/g, " ").trim().slice(0, 48);
-    this.tooltip = `${remote.name}\n${remote.description || ""}\n右键安装到本地`;
+    const installName = remote.name.split("__").pop() ?? remote.name;
+    this.tooltip = `${remote.name}\n将安装为: ${installName}\n${remote.description || ""}\n右键安装到用户级 / 项目级`;
     this.iconPath = new vscode.ThemeIcon("cloud-download");
     const skillMdPath = path.join(syncDir, "skills", remote.name, "SKILL.md");
     this.command = {
@@ -75,8 +76,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   constructor(
     private readonly collector: SkillsCollector,
     private readonly syncState: SyncStateService,
-    private readonly localStore: LocalStore,
-    private readonly listRemoteSkills: () => Promise<RemoteSkillMeta[]>
+    private readonly localStore: LocalStore
   ) {}
 
   refresh(): void {
@@ -118,7 +118,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<TreeItem> {
 
     let remote: RemoteSkillMeta[] = [];
     try {
-      remote = await this.listRemoteSkills();
+      remote = await this.localStore.listSyncedSkills();
     } catch {
       remote = [];
     }

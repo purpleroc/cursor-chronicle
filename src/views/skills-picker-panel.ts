@@ -199,7 +199,7 @@ export class SkillsPickerPanel {
   <div class="page">
     <div class="header">
       <h1>Skills 管理</h1>
-      <p>从 GitHub 仓库获取全量 Skills，选择安装目标后同步到本地或远程。</p>
+      <p>从已同步的本地仓库目录安装 Skills，选择目标后复制到用户级或项目级。</p>
       <span id="envBadge" class="env-badge" style="display:none;"></span>
     </div>
     <div id="msg" class="toast"></div>
@@ -214,6 +214,10 @@ export class SkillsPickerPanel {
 
     const $ = (id) => document.getElementById(id);
     const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const installName = (name) => {
+      const parts = String(name || '').split('__');
+      return (parts[parts.length - 1] || name || '').trim();
+    };
 
     function render() {
       const q = $('search').value.toLowerCase();
@@ -229,25 +233,28 @@ export class SkillsPickerPanel {
 
       if (filtered.length === 0) {
         $('list').innerHTML = '<div class="empty"><h3>没有找到匹配的 Skill</h3><p>' +
-          (ctx.skills.length === 0 ? '仓库中暂无 Skill，请先同步 Skills 到 GitHub。' : '尝试不同的搜索关键词。') + '</p></div>';
+          (ctx.skills.length === 0 ? '本地同步目录暂无 Skill，请先执行 Collect + Sync。' : '尝试不同的搜索关键词。') + '</p></div>';
         return;
       }
 
       $('list').innerHTML = filtered.map(skill => {
-        const n = esc(skill.name);
+        const source = skill.name;
+        const dest = installName(source);
+        const n = esc(source);
+        const destEsc = esc(dest);
         const desc = esc(skill.description || '无描述');
 
         const badgeHtml = [];
-        if (ctx.installed.localUser.includes(skill.name))
+        if (ctx.installed.localUser.includes(dest))
           badgeHtml.push('<span class="badge local">本地-用户级</span>');
-        if (ctx.installed.remoteUser.includes(skill.name))
+        if (ctx.installed.remoteUser.includes(dest))
           badgeHtml.push('<span class="badge remote">远端-用户级</span>');
-        if (ctx.installed.project.includes(skill.name))
+        if (ctx.installed.project.includes(dest))
           badgeHtml.push('<span class="badge project">项目级</span>');
 
-        const isAnyInstalled = ctx.installed.localUser.includes(skill.name) ||
-          ctx.installed.remoteUser.includes(skill.name) ||
-          ctx.installed.project.includes(skill.name);
+        const isAnyInstalled = ctx.installed.localUser.includes(dest) ||
+          ctx.installed.remoteUser.includes(dest) ||
+          ctx.installed.project.includes(dest);
 
         let options = '';
         if (ctx.isRemote) {
@@ -268,7 +275,7 @@ export class SkillsPickerPanel {
           '<div class="card-actions">' +
             '<select data-skill="' + n + '">' + options + '</select>' +
             '<button class="btn btn-primary" data-install="' + n + '">' + (isAnyInstalled ? '更新' : '安装') + '</button>' +
-            (isAnyInstalled ? '<button class="btn btn-danger" data-uninstall="' + n + '">卸载</button>' : '') +
+            (isAnyInstalled ? '<button class="btn btn-danger" data-uninstall="' + destEsc + '">卸载</button>' : '') +
             '<span class="spacer"></span>' +
             '<span style="font-size:11px;color:var(--fg-dim);">' + (skill.files ? skill.files.length + ' files' : '') + '</span>' +
           '</div></div></div>';
@@ -281,7 +288,7 @@ export class SkillsPickerPanel {
       document.querySelectorAll('button[data-install]').forEach(btn => {
         btn.addEventListener('click', () => {
           const skill = btn.getAttribute('data-install');
-          const sel = document.querySelector('select[data-skill="' + skill + '"]');
+          const sel = btn.parentElement.querySelector('select');
           const target = sel ? sel.value : 'user';
           btn.textContent = '安装中...';
           btn.disabled = true;
@@ -291,7 +298,7 @@ export class SkillsPickerPanel {
       document.querySelectorAll('button[data-uninstall]').forEach(btn => {
         btn.addEventListener('click', () => {
           const skill = btn.getAttribute('data-uninstall');
-          const sel = document.querySelector('select[data-skill="' + skill + '"]');
+          const sel = btn.parentElement.querySelector('select');
           const target = sel ? sel.value : 'user';
           btn.textContent = '卸载中...';
           btn.disabled = true;

@@ -11,20 +11,21 @@ import { TranscriptParser } from "./services/transcript-parser";
 import { MarkdownGenerator } from "./services/markdown-generator";
 import { SkillsCollector } from "./services/skills-collector";
 import { SyncStateService } from "./services/sync-state";
-import { GitHubSyncService, parseDescriptionFromSkillMd } from "./services/github-sync";
-import { SkillsInstaller } from "./services/skills-installer";
+import { GitHubSyncService } from "./services/github-sync";
+import { SkillsInstaller, skillInstallName } from "./services/skills-installer";
 import { ComposerDbReader } from "./services/composer-db-reader";
 import { LocalStore } from "./services/local-store";
 import { CollectService } from "./services/collect-service";
 import { SettingsPanel, SettingsPayload } from "./views/settings-panel";
 import { SkillsPickerPanel } from "./views/skills-picker-panel";
 import { ConversationsTreeProvider, ConversationNode } from "./views/conversations-tree";
-import { SkillsTreeProvider, SkillNode } from "./views/skills-tree";
+import { SkillsTreeProvider, SkillNode, RemoteSkillNode } from "./views/skills-tree";
 import { SkillRecord, RemoteSkillMeta } from "./models";
 import { acquireSyncLock, releaseSyncLock } from "./services/sync-lock";
 import { detectRemoteHome, isRemoteSession, getRemoteHost } from "./utils/remote-home";
 import { initLogger, logInfo, logWarn, logError, logDebug } from "./utils/logger";
 import { getUserHome } from "./utils/local-path";
+import { parseDescriptionFromSkillMd } from "./utils/skill-md";
 
 const TOKEN_KEY = "cursorChronicle.githubToken";
 
@@ -106,18 +107,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBar.show();
   context.subscriptions.push(statusBar);
 
-  const listRemoteSkills = async (): Promise<RemoteSkillMeta[]> => {
-    const token = await context.secrets.get(TOKEN_KEY);
-    const repository = vscode.workspace
-      .getConfiguration("cursorChronicle")
-      .get<string>("github.repository", "");
-    if (!token || !repository) return [];
-    const github = new GitHubSyncService(token);
-    return github.listRemoteSkills(github.parseRepo(repository));
-  };
-
   const convTree = new ConversationsTreeProvider(localStore, syncState);
-  const skillsTree = new SkillsTreeProvider(skillsCollector, syncState, localStore, listRemoteSkills);
+  const skillsTree = new SkillsTreeProvider(skillsCollector, syncState, localStore);
 
   context.subscriptions.push(
     vscode.window.createTreeView("cursorChronicle.conversations", { treeDataProvider: convTree }),
@@ -180,6 +171,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await localStore.gitConfigureRemote(token, repoRef.owner, repoRef.repo, settings.branch);
         await localStore.gitPull(settings.branch);
         logInfo("runCollectAndSync: GitHub pull completed");
+        skillsTree.refresh();
       }
 
       // Step 2: 从本机收集对话和技能，写入本地同步目录
@@ -276,13 +268,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("cursorChronicle.syncOneSkill", async (node: SkillNode) => {
       await syncSingleSkill(context, node.skill, localStore, syncState, skillsTree);
     }),
-    vscode.commands.registerCommand("cursorChronicle.chooseInstallRemoteSkill", async (remote: RemoteSkillMeta) => {
-      const token = await context.secrets.get(TOKEN_KEY);
-      const repository = vscode.workspace
-        .getConfiguration("cursorChronicle")
-        .get<string>("github.repository", "");
-      if (!token || !repository) {
-        void vscode.window.showErrorMessage("请先配置 GitHub。");
+    vscode.commands.registerCommand("cursorChronicle.chooseInstallRemoteSkill", async (node?: RemoteSkillNode) => {
+      const skillDir = node?.remote?.name;
+      if (!skillDir) {
+        void vscode.window.showErrorMessage("请从 Skills 侧边栏选择要安装的 Skill。");
         return;
       }
       const items: Array<{ label: string; target: "user" | "project" | "remote-user" }> = [
@@ -294,50 +283,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } else {
         items.push({ label: "安装到当前工作区 (.cursor/skills/)", target: "project" });
       }
-      const pick = await vscode.window.showQuickPick(items, { title: `安装技能: ${remote.name}` });
+      const pick = await vscode.window.showQuickPick(items, { title: `安装技能: ${skillDir}` });
       if (!pick) return;
       try {
         const remoteHome = await detectRemoteHome();
-        const github = new GitHubSyncService(token);
-        const installer = new SkillsInstaller(github, remoteHome);
-        await installer.installFromRepo(repository, remote.name, pick.target);
-        void vscode.window.showInformationMessage(`已安装: ${remote.name}`);
+        const installer = new SkillsInstaller(localStore, remoteHome);
+        await installer.install(skillDir, pick.target);
+        void vscode.window.showInformationMessage(`已安装: ${skillInstallName(skillDir)}`);
         skillsTree.refresh();
         await collectService.collectAll();
         convTree.refresh();
       } catch (e) {
+        logError("chooseInstallRemoteSkill failed", e);
         void vscode.window.showErrorMessage(`安装失败: ${e instanceof Error ? e.message : e}`);
       }
     }),
 
     vscode.commands.registerCommand("cursorChronicle.manageSkills", async () => {
       logDebug("manageSkills: opening skills management panel");
-      const token = await context.secrets.get(TOKEN_KEY);
       const repository = vscode.workspace
         .getConfiguration("cursorChronicle")
         .get<string>("github.repository", "");
-      if (!token || !repository) {
+      if (!repository) {
         logWarn("manageSkills: GitHub not configured");
         void vscode.window.showErrorMessage("请先配置 GitHub (侧边栏 → Configure GitHub)。");
         return;
       }
       try {
         const remoteHome = await detectRemoteHome();
-        const github = new GitHubSyncService(token);
-        const installer = new SkillsInstaller(github, remoteHome);
-        const repoRef = github.parseRepo(repository);
-        const skills = await github.listRemoteSkills(repoRef);
+        const installer = new SkillsInstaller(localStore, remoteHome);
+        const loadSkills = () => localStore.listSyncedSkills();
+        const skills = await loadSkills();
         const installedLocalUser = await installer.listInstalled("user");
         const installedRemoteUser = await installer.listInstalled("remote-user");
         const installedProject = await installer.listInstalled("project");
         const refreshPanelCtx = async () => {
-          const [lu, ru, proj] = await Promise.all([
+          const [nextSkills, lu, ru, proj] = await Promise.all([
+            loadSkills(),
             installer.listInstalled("user"),
             installer.listInstalled("remote-user"),
             installer.listInstalled("project"),
           ]);
           panel.updateCtx({
-            skills,
+            skills: nextSkills,
             installed: { localUser: [...lu], remoteUser: [...ru], project: [...proj] },
             isRemote: isRemoteSession(),
             remoteHost: getRemoteHost(),
@@ -347,8 +335,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const panel = new SkillsPickerPanel(
           async ({ skill, target }) => {
             try {
-              await installer.installFromRepo(repository, skill, target);
-              void vscode.window.showInformationMessage(`已安装: ${skill}`);
+              await installer.install(skill, target);
+              void vscode.window.showInformationMessage(`已安装: ${skillInstallName(skill)}`);
               skillsTree.refresh();
             } catch (e) {
               void vscode.window.showErrorMessage(`安装失败: ${e instanceof Error ? e.message : e}`);

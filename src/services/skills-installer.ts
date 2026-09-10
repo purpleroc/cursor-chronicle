@@ -1,36 +1,39 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import * as vscode from "vscode";
-import { GitHubSyncService } from "./github-sync";
-import { logInfo, logError } from "../utils/logger";
+import { LocalStore } from "./local-store";
+import { logInfo } from "../utils/logger";
 import { getUserHome } from "../utils/local-path";
 
 export type SkillInstallTarget = "user" | "project" | "remote-user";
 
-const encoder = new TextEncoder();
+/** Repo dir may be `projectName__skillName`; installed folder is always skillName. */
+export function skillInstallName(remoteSkillDir: string): string {
+  return (remoteSkillDir.split("__").pop() ?? remoteSkillDir).trim();
+}
 
 export class SkillsInstaller {
   constructor(
-    private readonly github: GitHubSyncService,
+    private readonly localStore: LocalStore,
     private readonly remoteHomeUri?: vscode.Uri
   ) {}
 
-  async installFromRepo(
-    repository: string,
-    remoteSkillDir: string,
-    target: SkillInstallTarget
-  ): Promise<string> {
-    logInfo(`SkillsInstaller.install: "${remoteSkillDir}" → ${target}`);
-    const repoRef = this.github.parseRepo(repository);
-    const files = await this.github.downloadSkillFiles(repoRef, remoteSkillDir);
-    if (files.length === 0) {
-      throw new Error("未找到 skill 文件。");
+  async install(remoteSkillDir: string, target: SkillInstallTarget): Promise<string> {
+    const skillName = skillInstallName(remoteSkillDir);
+    logInfo(`SkillsInstaller.install: "${remoteSkillDir}" → ${target} as "${skillName}"`);
+    if (!skillName) {
+      throw new Error("未指定 skill 名称。");
+    }
+    if (!(await this.localStore.syncedSkillExists(remoteSkillDir))) {
+      throw new Error(`未找到 skill 文件：${remoteSkillDir}。请先同步 GitHub。`);
     }
 
-    const skillName = this.normalizeSkillName(remoteSkillDir);
-
     if (target === "user") {
-      return this.installLocal(skillName, files);
+      return this.installLocal(remoteSkillDir, skillName);
+    }
+    const files = await this.localStore.readSyncedSkillFiles(remoteSkillDir);
+    if (files.length === 0) {
+      throw new Error(`未找到 skill 文件：${remoteSkillDir}。请先同步 GitHub。`);
     }
     if (target === "remote-user") {
       return this.installToRemoteUser(skillName, files);
@@ -39,15 +42,16 @@ export class SkillsInstaller {
   }
 
   async uninstall(skillName: string, target: SkillInstallTarget): Promise<void> {
-    logInfo(`SkillsInstaller.uninstall: "${skillName}" from ${target}`);
+    const destName = skillInstallName(skillName);
+    logInfo(`SkillsInstaller.uninstall: "${destName}" from ${target}`);
     if (target === "user") {
-      const dir = path.join(getUserHome(), ".cursor", "skills", skillName);
+      const dir = path.join(getUserHome(), ".cursor", "skills", destName);
       await fs.rm(dir, { recursive: true, force: true });
     } else if (target === "remote-user") {
-      const uri = this.remoteUserSkillUri(skillName);
+      const uri = this.remoteUserSkillUri(destName);
       try { await vscode.workspace.fs.delete(uri, { recursive: true }); } catch { /* already gone */ }
     } else {
-      const uri = this.projectSkillUri(skillName);
+      const uri = this.projectSkillUri(destName);
       try { await vscode.workspace.fs.delete(uri, { recursive: true }); } catch { /* already gone */ }
     }
   }
@@ -79,31 +83,37 @@ export class SkillsInstaller {
     } catch { return new Set(); }
   }
 
-  private async installLocal(skillName: string, files: Array<{ relativePath: string; content: string }>): Promise<string> {
+  private async installLocal(remoteSkillDir: string, skillName: string): Promise<string> {
+    const srcDir = this.localStore.syncedSkillDir(remoteSkillDir);
     const skillDir = path.join(getUserHome(), ".cursor", "skills", skillName);
-    await fs.mkdir(skillDir, { recursive: true });
-    for (const file of files) {
-      const abs = path.join(skillDir, file.relativePath);
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, file.content, "utf8");
-    }
+    await fs.mkdir(path.dirname(skillDir), { recursive: true });
+    await fs.rm(skillDir, { recursive: true, force: true });
+    await fs.cp(srcDir, skillDir, { recursive: true });
     return skillDir;
   }
 
-  private async installToRemoteUser(skillName: string, files: Array<{ relativePath: string; content: string }>): Promise<string> {
+  private async installToRemoteUser(
+    skillName: string,
+    files: Array<{ relativePath: string; content: Uint8Array }>
+  ): Promise<string> {
     const baseUri = this.remoteUserSkillUri(skillName);
+    try { await vscode.workspace.fs.delete(baseUri, { recursive: true }); } catch { /* first install */ }
     for (const file of files) {
       const fileUri = vscode.Uri.joinPath(baseUri, file.relativePath);
-      await vscode.workspace.fs.writeFile(fileUri, encoder.encode(file.content));
+      await vscode.workspace.fs.writeFile(fileUri, file.content);
     }
     return baseUri.toString();
   }
 
-  private async installToWorkspace(skillName: string, files: Array<{ relativePath: string; content: string }>): Promise<string> {
+  private async installToWorkspace(
+    skillName: string,
+    files: Array<{ relativePath: string; content: Uint8Array }>
+  ): Promise<string> {
     const baseUri = this.projectSkillUri(skillName);
+    try { await vscode.workspace.fs.delete(baseUri, { recursive: true }); } catch { /* first install */ }
     for (const file of files) {
       const fileUri = vscode.Uri.joinPath(baseUri, file.relativePath);
-      await vscode.workspace.fs.writeFile(fileUri, encoder.encode(file.content));
+      await vscode.workspace.fs.writeFile(fileUri, file.content);
     }
     return baseUri.toString();
   }
@@ -119,9 +129,5 @@ export class SkillsInstaller {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) { throw new Error("当前没有打开项目，无法操作项目级 Skill。"); }
     return vscode.Uri.joinPath(folder.uri, ".cursor", "skills", skillName);
-  }
-
-  private normalizeSkillName(remoteSkillDir: string): string {
-    return (remoteSkillDir.split("__").pop() ?? remoteSkillDir).trim();
   }
 }

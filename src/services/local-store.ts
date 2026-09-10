@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { expandUserPath } from "../utils/local-path";
 import { buildConversationFilename, sanitizeFilenamePart } from "../utils/file-naming";
 import { logInfo, logDebug, logWarn } from "../utils/logger";
+import { parseDescriptionFromSkillMd } from "../utils/skill-md";
+import type { RemoteSkillMeta } from "../models";
 import type { ComposerMeta } from "./composer-db-reader";
 
 const execFileAsync = promisify(execFileCb);
@@ -48,6 +50,16 @@ export interface LocalConversationEntry {
 
 interface ChronicleIndex {
   conversations: Record<string, { relativePath: string; lastUpdatedAt: number }>;
+}
+
+export function isSafeSkillDirName(name: string): boolean {
+  return Boolean(name)
+    && name === name.trim()
+    && name !== "."
+    && name !== ".."
+    && !name.includes("/")
+    && !name.includes("\\")
+    && !name.includes("\0");
 }
 
 export class LocalStore {
@@ -330,6 +342,132 @@ export class LocalStore {
     const outPath = path.join(this.getSyncDir(), "skills", "skills-index.json");
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     await fs.writeFile(outPath, jsonContent, "utf8");
+  }
+
+  skillsDir(): string {
+    return path.join(this.getSyncDir(), "skills");
+  }
+
+  syncedSkillDir(skillDirName: string): string {
+    if (!isSafeSkillDirName(skillDirName)) {
+      throw new Error("无效的 skill 目录名。");
+    }
+    return path.join(this.skillsDir(), skillDirName);
+  }
+
+  async syncedSkillExists(skillDirName: string): Promise<boolean> {
+    if (!isSafeSkillDirName(skillDirName)) return false;
+    try {
+      await fs.access(path.join(this.syncedSkillDir(skillDirName), "SKILL.md"));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async listSyncedSkills(): Promise<RemoteSkillMeta[]> {
+    const skillsRoot = this.skillsDir();
+    let entries;
+    try {
+      entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
+    const indexMap = await this.loadSkillsIndexMap();
+    const skills: RemoteSkillMeta[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isSafeSkillDirName(entry.name)) continue;
+      const skillDir = path.join(skillsRoot, entry.name);
+      const skillMd = path.join(skillDir, "SKILL.md");
+      try {
+        await fs.access(skillMd);
+      } catch {
+        continue;
+      }
+
+      const existing = indexMap.get(entry.name);
+      const files = existing?.files?.length
+        ? existing.files
+        : await this.listSkillRelativeFiles(skillDir);
+      let description = existing?.description || "";
+      if (!description) {
+        try {
+          description = parseDescriptionFromSkillMd(await fs.readFile(skillMd, "utf8"));
+        } catch {
+          /* ignore unreadable SKILL.md */
+        }
+      }
+
+      skills.push({
+        name: entry.name,
+        description,
+        updatedAt: existing?.updatedAt || "",
+        files,
+        fileHashes: existing?.fileHashes,
+      });
+    }
+
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+    logDebug(`LocalStore.listSyncedSkills: found ${skills.length} skills in ${skillsRoot}`);
+    return skills;
+  }
+
+  async readSyncedSkillFiles(skillDirName: string): Promise<Array<{ relativePath: string; content: Uint8Array }>> {
+    if (!(await this.syncedSkillExists(skillDirName))) return [];
+    const skillDir = this.syncedSkillDir(skillDirName);
+    const relativePaths = await this.listSkillRelativeFiles(skillDir);
+    const files: Array<{ relativePath: string; content: Uint8Array }> = [];
+    for (const rel of relativePaths) {
+      try {
+        files.push({
+          relativePath: rel,
+          content: await fs.readFile(path.join(skillDir, rel)),
+        });
+      } catch {
+        continue;
+      }
+    }
+    return files;
+  }
+
+  private async loadSkillsIndexMap(): Promise<Map<string, RemoteSkillMeta>> {
+    const map = new Map<string, RemoteSkillMeta>();
+    const raw = await this.readPublishSkillsIndex();
+    if (!raw) return map;
+    try {
+      const parsed = JSON.parse(raw) as { skills?: RemoteSkillMeta[] };
+      if (Array.isArray(parsed.skills)) {
+        for (const s of parsed.skills) {
+          if (s?.name) map.set(s.name, s);
+        }
+      }
+    } catch {
+      logWarn("LocalStore: corrupted skills-index.json, ignoring");
+    }
+    return map;
+  }
+
+  private async listSkillRelativeFiles(skillDir: string): Promise<string[]> {
+    const files: string[] = [];
+    const walk = async (current: string): Promise<void> => {
+      const entries = await fs.readdir(current, { withFileTypes: true });
+      for (const entry of entries) {
+        const abs = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(abs);
+        } else if (entry.isFile()) {
+          files.push(path.relative(skillDir, abs).split(path.sep).join("/"));
+        }
+      }
+    };
+    try {
+      await walk(skillDir);
+    } catch {
+      return [];
+    }
+    return files.sort();
   }
 
   private async assertGitAvailable(): Promise<void> {

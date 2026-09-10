@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.1]
+
+- Fix installing a GitHub skill from the sidebar context menu (`undefined` skill name → "未找到 skill 文件")
+- Install skills by copying from the local sync directory instead of downloading via GitHub API
+- Skill list reads local `skills/` and refreshes after `git pull`; install target directory is always `skillName`
+
 ## [1.0.0]
 
 ### Windows support
